@@ -296,6 +296,9 @@ class Orchestrator:
         self.overhead     = None
         self.gemini       = None
 
+        # Letztes Gemini-Hochreis-Bild (persistiert zwischen Updates)
+        self._last_gemini_image = None
+
     def setup(self):
         """Erstellt alle Komponenten."""
         print("B19 – Orchestrator Setup")
@@ -460,6 +463,7 @@ class Orchestrator:
 
             # ── High-res für Gemini ─────────────────────
             # WICHTIG: Original-Auflösung senden, nicht 16×16 upscaled
+            gemini_image = None
             if ml_result.get("gem_called"):
                 if isinstance(self.obs_source, MiniWorldObsSource) \
                         and self.obs_source.is_miniworld:
@@ -467,6 +471,9 @@ class Orchestrator:
                     gemini_image = self.obs_source._obs
                 else:
                     gemini_image = self.robot.get_high_res().image
+
+                # Persistiert bis zum nächsten Gemini-Call
+                self._last_gemini_image = gemini_image
 
                 ass = self.gemini.assess_image(
                     gemini_image,
@@ -484,7 +491,15 @@ class Orchestrator:
             else:
                 gemini_event = None
 
-            # ── Dashboard Update (B18) ──────────────────
+            # ── Live-Update: Kamera-Bilder jeden Step ──────
+            if isinstance(self.obs_source, MiniWorldObsSource) \
+                    and self.obs_source.is_miniworld:
+                live_obs = self.obs_source._obs   # Original-Auflösung
+            else:
+                live_obs = obs.image
+            self.dashboard.update_live(live_obs, ml_result["pred_obs"])
+
+            # ── Dashboard Update (B18) – volle Metriken ────
             if (step % self.cfg["update_display"] == 0 or
                     step == n-1):
 
@@ -527,6 +542,7 @@ class Orchestrator:
                     action_norm=act_arr,
                     sigma=ml_result.get("sigma"),
                     topdown=topdown,
+                    gemini_hires=self._last_gemini_image,  # persistiert zwischen Display-Updates
                 )
 
             # ── Overhead Map Update (jeden Step) ────────

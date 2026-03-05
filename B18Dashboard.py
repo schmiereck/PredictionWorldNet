@@ -82,6 +82,15 @@ class TrainingDashboard:
         self._last_goal = ""
         self._last_scene = ""
 
+        # Imshow-Objekte für schnelles set_data() (kein clear() nötig)
+        self._im_obs  = None
+        self._im_pred = None
+        self._im_diff = None
+
+        # Letztes hochaufgelöstes Bild das an Gemini ging
+        self._last_gemini_img  = None
+        self._im_gemini        = None
+
     def setup(self):
         """Erstellt das Dashboard-Fenster."""
         plt.ion()   # Interactive Mode – kein Blockieren
@@ -142,10 +151,12 @@ class TrainingDashboard:
             action_norm:   np.ndarray = None,
             sigma:         np.ndarray = None,
             topdown:       np.ndarray = None,    # (H,W,3) Top-Down Karte optional
+            gemini_hires:  np.ndarray = None,    # (H,W,3) letztes Bild an Gemini
     ):
         """
-        Aktualisiert das Dashboard.
+        Aktualisiert das Dashboard (volle Metriken).
 
+        Für live Kamera-Bilder jeden Step: update_live() aufrufen.
         Zwei Geschwindigkeiten:
             Schnell (jeden Aufruf):  Kamerabild, Vorhersage, Differenz, Auftrag
             Langsam (alle 10 Aufrufe): Loss-Kurven, Rewards, Latent-Space, Gemini-Timeline
@@ -156,6 +167,10 @@ class TrainingDashboard:
         self._last_goal = goal
         self._last_scene = scene
         slow_update = (self._step % 10 == 0) or (self._step == 1)
+
+        # Gemini-Hochreis-Bild speichern
+        if gemini_hires is not None:
+            self._last_gemini_img = gemini_hires
 
         # Metriken speichern
         for k, v in metrics.items():
@@ -200,33 +215,43 @@ class TrainingDashboard:
         steps_x = list(range(len(self.hist["fe"])))
 
         # ── Panel: Aktuelles Bild ──────────────────────
-        self.ax_obs.clear()
-        self.ax_obs.imshow(obs, interpolation='nearest')
+        if self._im_obs is None:
+            self.ax_obs.clear()
+            self._im_obs = self.ax_obs.imshow(obs, interpolation='nearest')
+            self.ax_obs.axis('off')
+        else:
+            self._im_obs.set_data(obs)
         self.ax_obs.set_title(
             f'Kamera (aktuell)\n{scene}', fontsize=8, color='white'
         )
-        self.ax_obs.axis('off')
 
         # ── Panel: Vorhergesagtes Bild ─────────────────
-        self.ax_pred.clear()
         pred_disp = (pred_f * 255).astype(np.uint8)
-        self.ax_pred.imshow(pred_disp, interpolation='nearest')
         pe = self.hist["pred_error"][-1] if self.hist["pred_error"] else 0
+        if self._im_pred is None:
+            self.ax_pred.clear()
+            self._im_pred = self.ax_pred.imshow(pred_disp, interpolation='nearest')
+            self.ax_pred.axis('off')
+        else:
+            self._im_pred.set_data(pred_disp)
         self.ax_pred.set_title(
             f'Vorhersage\nMSE={pe:.4f}', fontsize=8, color='white'
         )
-        self.ax_pred.axis('off')
 
         # ── Panel: Differenz-Bild ──────────────────────
-        self.ax_diff.clear()
         diff = np.abs(obs_f - pred_f)
-        diff_amp = np.clip(diff * 5, 0, 1)   # ×5 Verstärkung
-        self.ax_diff.imshow(diff_amp, cmap='hot', interpolation='nearest',
-                            vmin=0, vmax=1)
+        diff_amp = np.clip(diff * 5, 0, 1)
+        if self._im_diff is None:
+            self.ax_diff.clear()
+            self._im_diff = self.ax_diff.imshow(
+                diff_amp, cmap='hot', interpolation='nearest', vmin=0, vmax=1
+            )
+            self.ax_diff.axis('off')
+        else:
+            self._im_diff.set_data(diff_amp)
         self.ax_diff.set_title(
             f'Prediction Error\n(×5 Verstärkt)', fontsize=8, color='white'
         )
-        self.ax_diff.axis('off')
 
         # ── Panel: Ziel + Action ──────────────────────
         self.ax_goal.clear(); self.ax_goal.axis('off')
@@ -299,23 +324,42 @@ class TrainingDashboard:
         self.ax_cam.set_title('Aktueller Auftrag',
                               fontsize=9, color='white')
 
-        # ── Panel: Top-Down / Arc-Visualisierung ───────
-        self.ax_arc.clear(); self.ax_arc.set_facecolor('#0d1b2a')
-        if topdown is not None:
-            # MiniWorld Top-Down Karte (Wände + Objekte sichtbar)
+        # Panel: Letztes Gemini-Bild (hochaufgeloest)
+        if self._last_gemini_img is not None:
+            if self._im_gemini is None:
+                self.ax_arc.clear()
+                self._im_gemini = self.ax_arc.imshow(
+                    self._last_gemini_img, interpolation='nearest'
+                )
+                self.ax_arc.axis('off')
+            else:
+                self._im_gemini.set_data(self._last_gemini_img)
+                h, w = self._last_gemini_img.shape[:2]
+                self.ax_arc.set_xlim(-0.5, w - 0.5)
+                self.ax_arc.set_ylim(h - 0.5, -0.5)
+            n_calls = len(self.gemini_events)
+            last_r  = (self.gemini_events[-1]['event'].get('reward', 0)
+                       if self.gemini_events else 0)
+            self.ax_arc.set_title(
+                f'Letztes Gemini-Bild  (#{n_calls}  r={last_r:.2f})',
+                fontsize=8, color='cyan'
+            )
+        elif topdown is not None:
+            self.ax_arc.clear(); self._im_gemini = None
             self.ax_arc.imshow(topdown, interpolation='nearest')
             self.ax_arc.set_title('Top-Down (MiniWorld)',
                                   fontsize=8, color='white')
             self.ax_arc.axis('off')
         else:
-            # Fallback: Arc-Visualisierung
+            self.ax_arc.clear(); self._im_gemini = None
+            self.ax_arc.set_facecolor('#0d1b2a')
             self.ax_arc.axis('off')
             if action_norm is not None:
                 lx_norm  = float(action_norm[0])
                 arc_norm = float(action_norm[4])
                 arc_phys = (arc_norm+1)/2*4-2
                 robot_c  = plt.Circle((0.5, 0.35), 0.07,
-                                      color='steelblue', zorder=4)
+                                       color='steelblue', zorder=4)
                 self.ax_arc.add_patch(robot_c)
                 if abs(arc_phys) > 0.1:
                     r_n = np.clip(arc_phys/2, -1, 1)
@@ -326,21 +370,27 @@ class TrainingDashboard:
                         0.35 + abs(r_n*0.25)*np.sin(th),
                         color='orange', linewidth=2.5
                     )
-                    desc = f"Kurve R={arc_phys:+.1f}m"
+                    desc = f'Kurve R={arc_phys:+.1f}m'
                 else:
                     self.ax_arc.annotate(
-                        "", xy=(0.5, 0.35+lx_norm*0.35),
+                        '', xy=(0.5, 0.35+lx_norm*0.35),
                         xytext=(0.5, 0.35),
                         arrowprops=dict(arrowstyle='->',
                                         color='lime', lw=2.5,
                                         mutation_scale=15)
                     )
-                    desc = "geradeaus"
-                self.ax_arc.set_title(f'Bewegung: {desc}',
-                                      fontsize=8, color='white')
+                    desc = 'geradeaus'
+                self.ax_arc.set_title(
+                    f'Bewegung: {desc} / warte auf Gemini...',
+                    fontsize=8, color='gray'
+                )
             else:
-                self.ax_arc.set_title('Bewegung', fontsize=8, color='white')
-            self.ax_arc.set_xlim(0,1); self.ax_arc.set_ylim(0,1)
+                self.ax_arc.set_title(
+                    'Letztes Gemini-Bild (noch kein Call)',
+                    fontsize=8, color='gray'
+                )
+            self.ax_arc.set_xlim(0, 1); self.ax_arc.set_ylim(0, 1)
+
 
         # ── Panels: Kurven + Latent + Gemini + Statistiken (langsam) ──
         if slow_update:
@@ -538,6 +588,75 @@ class TrainingDashboard:
             plt.show()
         except KeyboardInterrupt:
             pass
+
+    # ─────────────────────────────────────────────
+    # SCHNELLES LIVE-UPDATE (jeden Step aufrufen)
+    # ─────────────────────────────────────────────
+
+    def update_live(self, obs: np.ndarray, pred: np.ndarray):
+        """
+        Schnelles Update nur für die 3 Kamera-Panels (jeden Step).
+        Nutzt set_data() statt clear()+imshow() → deutlich schneller.
+
+        Aufruf im Loop:
+            dashboard.update_live(obs.image, ml_result["pred_obs"])
+        """
+        if self.fig is None:
+            return
+
+        self._last_obs  = obs
+        self._last_pred = pred
+
+        # Prediction skalieren falls nötig
+        obs_h, obs_w = obs.shape[:2]
+        pred_f = np.clip(pred, 0, 1)
+        if pred_f.shape[:2] != (obs_h, obs_w):
+            try:
+                from PIL import Image as _PILImage
+                pred_pil = _PILImage.fromarray(
+                    (pred_f * 255).astype(np.uint8)
+                ).resize((obs_w, obs_h), _PILImage.NEAREST)
+                pred_f = np.array(pred_pil).astype(float) / 255.0
+            except ImportError:
+                ry = max(1, obs_h // pred_f.shape[0])
+                rx = max(1, obs_w // pred_f.shape[1])
+                pred_f = np.repeat(np.repeat(pred_f, ry, axis=0), rx, axis=1)
+                pred_f = pred_f[:obs_h, :obs_w]
+
+        obs_f     = obs.astype(float) / 255.0
+        pred_disp = (pred_f * 255).astype(np.uint8)
+        diff_amp  = np.clip(np.abs(obs_f - pred_f) * 5, 0, 1)
+        pe        = float(np.mean((obs_f - pred_f) ** 2))
+
+        if self._im_obs is None:
+            # Erste Initialisierung
+            self.ax_obs.clear()
+            self._im_obs = self.ax_obs.imshow(obs, interpolation='nearest')
+            self.ax_obs.set_title('Kamera NN (live)', fontsize=8, color='lime')
+            self.ax_obs.axis('off')
+
+            self.ax_pred.clear()
+            self._im_pred = self.ax_pred.imshow(pred_disp, interpolation='nearest')
+            self.ax_pred.set_title(f'Vorhersage\nMSE={pe:.4f}',
+                                   fontsize=8, color='white')
+            self.ax_pred.axis('off')
+
+            self.ax_diff.clear()
+            self._im_diff = self.ax_diff.imshow(
+                diff_amp, cmap='hot', interpolation='nearest', vmin=0, vmax=1
+            )
+            self.ax_diff.set_title('Pred. Error (×5)', fontsize=8, color='white')
+            self.ax_diff.axis('off')
+        else:
+            self._im_obs.set_data(obs)
+            self._im_pred.set_data(pred_disp)
+            self._im_diff.set_data(diff_amp)
+            self.ax_obs.set_title('Kamera NN (live)', fontsize=8, color='lime')
+            self.ax_pred.set_title(f'Vorhersage\nMSE={pe:.4f}',
+                                   fontsize=8, color='white')
+
+        self.fig.canvas.draw_idle()
+        plt.pause(0.001)
 
 
 # ─────────────────────────────────────────────
