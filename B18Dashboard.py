@@ -91,10 +91,18 @@ class TrainingDashboard:
         self._last_gemini_img  = None
         self._im_gemini        = None
 
+        # Fenster-geschlossen Flag
+        self._window_closed = False
+
+    @property
+    def window_closed(self):
+        return self._window_closed
+
     def setup(self):
         """Erstellt das Dashboard-Fenster."""
         plt.ion()   # Interactive Mode – kein Blockieren
         self.fig = plt.figure(figsize=(18, 11))
+        self.fig.canvas.mpl_connect('close_event', lambda evt: setattr(self, '_window_closed', True))
         self.fig.patch.set_facecolor('#0d0d0d')
         self.fig.suptitle(
             self.title,
@@ -214,15 +222,11 @@ class TrainingDashboard:
 
         steps_x = list(range(len(self.hist["fe"])))
 
-        # ── Panel: Aktuelles Bild ──────────────────────
-        if self._im_obs is None:
-            self.ax_obs.clear()
-            self._im_obs = self.ax_obs.imshow(obs, interpolation='nearest')
-            self.ax_obs.axis('off')
-        else:
-            self._im_obs.set_data(obs)
+        # ── Panel: Aktuelles Bild (16×16 NN-Input) ────
+        # obs wird hier NICHT angezeigt – update_live() macht das
+        # ax_obs wird nur noch von update_live() beschrieben
         self.ax_obs.set_title(
-            f'Kamera (aktuell)\n{scene}', fontsize=8, color='white'
+            f'Kamera NN (live)\n{scene}', fontsize=8, color='lime'
         )
 
         # ── Panel: Vorhergesagtes Bild ─────────────────

@@ -137,6 +137,9 @@ class OverheadMapView:
         # MiniWorld Environment (optional, für echte Wände/Objekte)
         self._mw_env = None
 
+        # Fenster-geschlossen Flag
+        self._window_closed = False
+
     def setup(self):
         """Öffnet das Karten-Fenster."""
         plt.ion()   # Interactive Mode
@@ -144,6 +147,7 @@ class OverheadMapView:
             figsize=(9, 8),
             num="Draufsicht"
         )
+        self.fig.canvas.mpl_connect('close_event', lambda evt: setattr(self, '_window_closed', True))
         self.fig.patch.set_facecolor('#0d0d0d')
         self.fig.suptitle(self.title, fontsize=11,
                           fontweight='bold', color='white')

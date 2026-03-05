@@ -568,6 +568,138 @@ class IntegratedSystem:
         self.current_goal_emb = self.clip.encode(self.current_goal)
         return result
 
+    # ─────────────────────────────────────────────
+    # B20 – MODELL-PERSISTENZ (Save/Load)
+    # ─────────────────────────────────────────────
+
+    def save_checkpoint(self, path: str = None, tag: str = ""):
+        """
+        Speichert alle Netz-Gewichte + Optimizer + Metriken.
+
+        Args:
+            path: Voller Dateipfad. Wenn None → auto-generiert.
+            tag:  Optionaler Bezeichner (z.B. "pretrain_vae", "live_step500")
+
+        Returns:
+            Pfad der gespeicherten Datei.
+        """
+        import datetime
+        if path is None:
+            ckpt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "checkpoints")
+            os.makedirs(ckpt_dir, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            name = f"pwn_{tag}_{ts}.pt" if tag else f"pwn_{ts}.pt"
+            path = os.path.join(ckpt_dir, name)
+
+        checkpoint = {
+            # Modell-Gewichte
+            "encoder":      self.encoder.state_dict(),
+            "decoder":      self.decoder.state_dict(),
+            "transformer":  self.transformer.state_dict(),
+            "action_head":  self.action_head.state_dict(),
+            "goal_proj":    self.goal_proj.state_dict(),
+            # Optimizer & Scheduler
+            "optimizer":    self.optimizer.state_dict(),
+            "scheduler":    self.scheduler.state_dict(),
+            # Training-State
+            "total_steps":  self.total_steps,
+            "train_steps":  self.train_steps,
+            "beta":         self.beta,
+            "current_goal": self.current_goal,
+            # Config (zur Überprüfung beim Laden)
+            "config":       self.cfg,
+            "constants": {
+                "LATENT_DIM": LATENT_DIM,
+                "D_MODEL":    D_MODEL,
+                "ACTION_DIM": ACTION_DIM,
+            },
+            "tag":          tag,
+        }
+        torch.save(checkpoint, path)
+        print(f"  Checkpoint gespeichert: {path}")
+        print(f"    Tag: {tag or '(ohne)'}  |  "
+              f"Steps: {self.total_steps}  |  "
+              f"Train: {self.train_steps}")
+        return path
+
+    def load_checkpoint(self, path: str, load_optimizer: bool = True,
+                        strict: bool = True):
+        """
+        Lädt Netz-Gewichte (und optional Optimizer-State).
+
+        Args:
+            path:           Pfad zur .pt Datei
+            load_optimizer: Optimizer/Scheduler-State laden (False für Pre-Training)
+            strict:         strict=False erlaubt teilweises Laden
+                            (z.B. nur Encoder/Decoder aus Pre-Training)
+
+        Returns:
+            dict mit Checkpoint-Metadaten (tag, steps, config)
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Checkpoint nicht gefunden: {path}")
+
+        checkpoint = torch.load(path, weights_only=False)
+
+        # Modell-Gewichte laden
+        self.encoder.load_state_dict(
+            checkpoint["encoder"], strict=strict)
+        self.decoder.load_state_dict(
+            checkpoint["decoder"], strict=strict)
+
+        # Transformer/ActionHead/GoalProj nur laden wenn vorhanden
+        if "transformer" in checkpoint:
+            try:
+                self.transformer.load_state_dict(
+                    checkpoint["transformer"], strict=strict)
+            except RuntimeError as e:
+                if strict:
+                    raise
+                print(f"    Transformer: übersprungen ({e})")
+        if "action_head" in checkpoint:
+            try:
+                self.action_head.load_state_dict(
+                    checkpoint["action_head"], strict=strict)
+            except RuntimeError as e:
+                if strict:
+                    raise
+                print(f"    ActionHead: übersprungen ({e})")
+        if "goal_proj" in checkpoint:
+            try:
+                self.goal_proj.load_state_dict(
+                    checkpoint["goal_proj"], strict=strict)
+            except RuntimeError as e:
+                if strict:
+                    raise
+                print(f"    GoalProj: übersprungen ({e})")
+
+        # Optimizer/Scheduler
+        if load_optimizer and "optimizer" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+            if "scheduler" in checkpoint:
+                self.scheduler.load_state_dict(checkpoint["scheduler"])
+
+        # Training-State
+        if "total_steps" in checkpoint:
+            self.total_steps = checkpoint["total_steps"]
+            self.train_steps = checkpoint.get("train_steps", 0)
+            self.beta        = checkpoint.get("beta", 0.0)
+
+        tag   = checkpoint.get("tag", "")
+        steps = checkpoint.get("total_steps", 0)
+        print(f"  Checkpoint geladen: {path}")
+        print(f"    Tag: {tag or '(ohne)'}  |  "
+              f"Steps: {steps}  |  "
+              f"Train: {checkpoint.get('train_steps', 0)}")
+
+        return {
+            "tag":       tag,
+            "steps":     steps,
+            "config":    checkpoint.get("config", {}),
+            "constants": checkpoint.get("constants", {}),
+        }
+
     def step(self, obs_np: np.ndarray, action_np: np.ndarray,
              next_obs_np: np.ndarray, scene: str):
         """

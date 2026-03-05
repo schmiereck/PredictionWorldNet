@@ -19,6 +19,7 @@ import os
 ENV_NAME      = "MiniWorld-OneRoom-v0"
 N_STEPS       = 500
 DISPLAY_EVERY = 8
+CHECKPOINT    = "checkpoints/pwn_pretrain_vae_*.pt"  # neuester wird automatisch gewählt
 
 
 # ─────────────────────────────────────────────
@@ -119,6 +120,7 @@ def main():
         "n_steps":             N_STEPS,
         "miniworld_env":       ENV_NAME,
         "update_display":      DISPLAY_EVERY,
+        "checkpoint":          CHECKPOINT,
         "scene_switch":        40,
         "buffer_size":         1000,
         "batch_size":          16,

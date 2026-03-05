@@ -345,3 +345,82 @@ B01 → B02 → B03 → B04 → B08 → B10 → B11 → B16
 ```
 
 ------------------------------------------------------------------------------------------------------------------------
+## Gruppe 7: Modell-Persistenz & Pre-Training
+
+### Motivation
+Das Netz startet mit zufälligen Gewichten und muss gleichzeitig:
+1. Bilder encodieren/decodieren lernen (VAE)
+2. Zeitliche Zusammenhänge verstehen (Transformer)
+3. Auf Ziel-Texte reagieren (CLIP/Goal-Embedding)
+4. Aktionen ableiten (Action Head)
+
+Das ist zu viel auf einmal. Lösung: Vortrainierte Gewichte für Encoder/Decoder
+und CLIP-Embedding, die dann im Live-Training (B19) als Startpunkt dienen.
+
+Aktuell gibt es keine Save/Load-Funktionalität – alle Gewichte gehen verloren.
+
+### Neue Bausteine
+
+- **B20** – Modell-Persistenz (Save/Load) + Pre-Training VAE
+  Save/Load aller Netz-Gewichte als PyTorch-Checkpoints (in B16 IntegratedSystem).
+  Zusätzlich eigenständiges Script `B20PreTrainVAE.py`:
+  Sammelt Screenshots aus MiniWorld, trainiert Encoder + Decoder offline.
+  Kann wiederholt auf dasselbe Netz angewendet werden (laden → trainieren → speichern).
+  Format: `checkpoints/pwn_<tag>_<timestamp>.pt`
+  ```
+  # Neu trainieren:
+  python B20PreTrainVAE.py --source miniworld --epochs 50
+  # Nachtrainieren (ab letztem Checkpoint):
+  python B20PreTrainVAE.py --checkpoint checkpoints/pwn_pretrain_vae_*.pt --epochs 50
+  python B20PreTrainVAE.py --checkpoint checkpoints/pwn_pretrain_vae_*.pt --frames 10000 --epochs 100
+    ```
+Warum ist der Bildvorhersage Fehler immer noch so riesig?
+- **B21** – Pre-Training CLIP/Goal-Embedding (`B21PreTrainCLIP.py`)
+  Trainiert die Goal-Projection (Text → Latent Space) mit gelabelten Bildern.
+  Benötigt vortrainierten VAE-Checkpoint (B20).
+  Labels werden per Farbheuristik automatisch erzeugt:
+    - "red object"   → Bild mit vielen roten Pixeln
+    - "green object" → Bild mit vielen grünen Pixeln
+    - "empty wall"   → Bild ohne markante Farben
+  Contrastive InfoNCE Loss für Text↔Latent Alignment.
+  ```
+  python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_pretrain_vae_*.pt
+  python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_pretrain_vae_*.pt --frames 5000 --epochs 60
+  ```
+
+####  Implementiert:
+
+  1. B16 save_checkpoint() / load_checkpoint() – speichert/lädt alle Netz-Gewichte (Encoder, Decoder, Transformer, ActionHead, GoalProj + Optimizer/Scheduler)
+  2. B19 Orchestrator – --checkpoint CLI-Argument, automatisches Laden beim Start, automatisches Speichern am Ende
+  3. B19OrchestratorModeMiniworld – CHECKPOINT Konfig-Variable, wird an Orchestrator weitergeleitet
+  4. B20PreTrainVAE.py – Offline-Training von Encoder+Decoder auf MiniWorld-Frames (oder Mock), wiederholbar mit --checkpoint
+  5. B21PreTrainCLIP.py – Contrastive Training der Goal-Projektion (Text→Latent) mit Auto-Labels, benötigt VAE-Checkpoint
+  6. LOGBOOK.md – Dokumentation aktualisiert
+
+####  Workflow:
+
+  python B20PreTrainVAE.py --epochs 50
+  python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_pretrain_vae_*.pt
+  python B19Orchestrator.py --checkpoint checkpoints/pwn_pretrain_clip_*.pt
+
+#### Der Ablauf ist:
+
+1. Encoder wird aus dem VAE-Checkpoint geladen (vortrainierte Gewichte)
+2. Encoder wird eingefroren (Zeile 163–164) – er lernt nicht mehr
+3. Für jedes Bild: Encoder erzeugt einen Latent-Vektor z (64-dim)
+4. CLIP-Text-Encoder erzeugt ein Text-Embedding (512-dim) für das Label
+5. goal_proj (512→64) wird trainiert, sodass Text-Vektoren zu den passenden Bild-Latents ausgerichtet werden
+
+Warum braucht B21 den VAE? Ohne vortrainierten Encoder wären die Latent-Vektoren zufälliger Quatsch – goal_proj hätte kein sinnvolles Ziel, auf das es Text-Embeddings abbilden kann. Die Qualität des CLIP-Trainings hängt direkt davon ab, dass der Encoder bereits gelernt
+hat, Bilder sinnvoll zu komprimieren.
+
+Zwei separate Dateien sind absolut sinnvoll – jeder Baustein trainiert unabhängig seinen Teil.
+### Reihenfolge
+```
+B20 (Save/Load + Pre-Train VAE) → B21 (Pre-Train CLIP)
+                                          ↓
+                                  B19 (Live mit vortrainierten Gewichten)
+                                  python B19Orchestrator.py --checkpoint checkpoints/pwn_*.pt
+```
+
+------------------------------------------------------------------------------------------------------------------------

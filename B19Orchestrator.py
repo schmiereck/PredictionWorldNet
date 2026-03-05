@@ -362,6 +362,20 @@ class Orchestrator:
         # Initiales Ziel setzen
         self.ml_system.set_goal(f"find the {self._scene.replace('_',' ')}")
         print(f"  IntegratedSystem ✓  ({sum(p.numel() for p in self.ml_system.encoder.parameters()) + sum(p.numel() for p in self.ml_system.decoder.parameters()):,} Param.)")
+
+        # ── Checkpoint laden (B20) ─────────────────────
+        ckpt_path = self.cfg.get("checkpoint", None)
+        if ckpt_path:
+            import glob as _g
+            matches = sorted(_g.glob(ckpt_path))
+            if matches:
+                ckpt_path = matches[-1]  # neuester
+            print(f"\n  Lade Checkpoint: {ckpt_path}")
+            self.ml_system.load_checkpoint(
+                ckpt_path,
+                load_optimizer=self.cfg.get("load_optimizer", False),
+                strict=self.cfg.get("strict_load", False),
+            )
         print()
 
         # ── Dashboard (B18) ────────────────────────────
@@ -424,6 +438,14 @@ class Orchestrator:
 
         for step in range(n):
             self._step = step
+
+            # ── Fenster geschlossen? → sauber beenden ──
+            if self.dashboard.window_closed:
+                print("\n[Fenster geschlossen] Beende Training...")
+                break
+            if self.overhead is not None and self.overhead._window_closed:
+                print("\n[Karten-Fenster geschlossen] Beende Training...")
+                break
 
             # ── Szene / Ziel (Mock-Modus) ──────────────
             if mode == "mock":
@@ -498,11 +520,8 @@ class Orchestrator:
                 gemini_event = None
 
             # ── Live-Update: Kamera-Bilder jeden Step ──────
-            if isinstance(self.obs_source, MiniWorldObsSource) \
-                    and self.obs_source.is_miniworld:
-                live_obs = self.obs_source._obs   # Original-Auflösung
-            else:
-                live_obs = obs.image
+            # Niedrig aufgelöstes Bild (16×16) – das was das NN sieht
+            live_obs = obs.image  # bereits 16×16 vom ML-System
             self.dashboard.update_live(live_obs, ml_result["pred_obs"])
 
             # ── Dashboard Update (B18) – volle Metriken ────
@@ -599,8 +618,13 @@ class Orchestrator:
         print("  → Rest bleibt identisch")
         print()
         print("Nächste Schritte:")
-        print("  B20 – Systemtest / Evaluation")
-        print("  B21 – ROS2 Live-Anbindung")
+        print("  B21 – Pre-Training VAE")
+        print("  B22 – Pre-Training CLIP")
+
+        # ── Checkpoint speichern (B20) ─────────────────
+        if self.cfg.get("save_checkpoint", True):
+            tag = f"live_{self.cfg['mode']}"
+            self.ml_system.save_checkpoint(tag=tag)
 
     def close(self):
         self.robot.close()
@@ -634,6 +658,10 @@ def parse_args():
         "--display", type=int, default=8,
         help="Dashboard Update alle N Steps"
     )
+    parser.add_argument(
+        "--checkpoint", type=str, default=None,
+        help="Checkpoint-Datei laden (z.B. checkpoints/pwn_pretrain_vae_*.pt)"
+    )
     return parser.parse_args()
 
 
@@ -645,6 +673,7 @@ if __name__ == "__main__":
         "n_steps":         args.steps,
         "miniworld_env":   args.env,
         "update_display":  args.display,
+        "checkpoint":      args.checkpoint,
         "scene_switch":    40,
         "buffer_size":     1000,
         "batch_size":      16,
