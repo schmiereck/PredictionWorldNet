@@ -143,12 +143,19 @@ class TrainingDashboard:
             sigma:         np.ndarray = None,
             topdown:       np.ndarray = None,    # (H,W,3) Top-Down Karte optional
     ):
-        """Aktualisiert alle Dashboard-Panels."""
+        """
+        Aktualisiert das Dashboard.
+
+        Zwei Geschwindigkeiten:
+            Schnell (jeden Aufruf):  Kamerabild, Vorhersage, Differenz, Auftrag
+            Langsam (alle 10 Aufrufe): Loss-Kurven, Rewards, Latent-Space, Gemini-Timeline
+        """
         self._step  += 1
         self._last_obs  = obs
         self._last_pred = pred
         self._last_goal = goal
         self._last_scene = scene
+        slow_update = (self._step % 10 == 0) or (self._step == 1)
 
         # Metriken speichern
         for k, v in metrics.items():
@@ -166,15 +173,14 @@ class TrainingDashboard:
                 ).resize((obs_w, obs_h), _PILImage.NEAREST)
                 pred_f = np.array(pred_pil).astype(float) / 255.0
             except ImportError:
-                # Ohne PIL: grob wiederholen
-                ry = obs_h // pred_f.shape[0]
-                rx = obs_w // pred_f.shape[1]
+                ry = max(1, obs_h // pred_f.shape[0])
+                rx = max(1, obs_w // pred_f.shape[1])
                 pred_f = np.repeat(np.repeat(pred_f, ry, axis=0),
                                    rx, axis=1)
                 pred_f = pred_f[:obs_h, :obs_w]
 
-        # Prediction Error (auf gleicher Auflösung)
-        obs_f  = obs.astype(float) / 255.0
+        # Prediction Error
+        obs_f = obs.astype(float) / 255.0
         self.hist["pred_error"].append(
             float(np.mean((obs_f - pred_f)**2))
         )
@@ -336,225 +342,195 @@ class TrainingDashboard:
                 self.ax_arc.set_title('Bewegung', fontsize=8, color='white')
             self.ax_arc.set_xlim(0,1); self.ax_arc.set_ylim(0,1)
 
-        # ── Panel: Free Energy ─────────────────────────
-        self.ax_fe.clear()
-        if self.hist["fe"]:
-            self.ax_fe.plot(steps_x, list(self.hist["fe"]),
-                            color='white', linewidth=1.2,
-                            alpha=0.5, label='Free Energy')
-            self.ax_fe.plot(steps_x, list(self.hist["recon"]),
-                            color='steelblue', linewidth=1.3,
-                            label='Recon')
-            self.ax_fe.plot(steps_x, list(self.hist["kl"]),
-                            color='darkorange', linewidth=1.3,
-                            label='KL')
-            if len(self.hist["fe"]) >= 20:
-                ma = np.convolve(list(self.hist["fe"]),
-                                 np.ones(20)/20, mode='valid')
-                self.ax_fe.plot(range(19, len(self.hist["fe"])), ma,
-                                color='red', linewidth=2, label='FE MA-20')
-            # Gemini-Call Markierungen
-            for ev in self.gemini_events:
-                si = ev["step"] - (self._step - len(self.hist["fe"]))
-                if 0 <= si < len(self.hist["fe"]):
-                    self.ax_fe.axvline(si, color='cyan',
-                                       linewidth=1, alpha=0.5)
-        self.ax_fe.set_title(
-            'Loss-Kurven  |  Cyan = Gemini-Call', fontsize=9, color='white'
-        )
-        self.ax_fe.legend(fontsize=6, ncol=2)
-        self.ax_fe.set_facecolor('#111111')
-        self.ax_fe.tick_params(colors='white')
+        # ── Panels: Kurven + Latent + Gemini + Statistiken (langsam) ──
+        if slow_update:
+            # ── Free Energy ────────────────────────────
+            self.ax_fe.clear()
+            if self.hist["fe"]:
+                self.ax_fe.plot(steps_x, list(self.hist["fe"]),
+                                color='white', linewidth=1.2,
+                                alpha=0.5, label='Free Energy')
+                self.ax_fe.plot(steps_x, list(self.hist["recon"]),
+                                color='steelblue', linewidth=1.3,
+                                label='Recon')
+                self.ax_fe.plot(steps_x, list(self.hist["kl"]),
+                                color='darkorange', linewidth=1.3,
+                                label='KL')
+                if len(self.hist["fe"]) >= 20:
+                    ma = np.convolve(list(self.hist["fe"]),
+                                     np.ones(20)/20, mode='valid')
+                    self.ax_fe.plot(range(19, len(self.hist["fe"])), ma,
+                                    color='red', linewidth=2, label='FE MA-20')
+                for ev in self.gemini_events:
+                    si = ev["step"] - (self._step - len(self.hist["fe"]))
+                    if 0 <= si < len(self.hist["fe"]):
+                        self.ax_fe.axvline(si, color='cyan',
+                                           linewidth=1, alpha=0.5)
+            self.ax_fe.set_title('Loss-Kurven  |  Cyan = Gemini-Call',
+                                 fontsize=9, color='white')
+            self.ax_fe.legend(fontsize=6, ncol=2)
+            self.ax_fe.set_facecolor('#111111')
+            self.ax_fe.tick_params(colors='white')
 
         # ── Panel: Rewards ─────────────────────────────
         self.ax_rewards.clear()
         if self.hist["r_total"]:
-            self.ax_rewards.plot(steps_x, list(self.hist["r_intrinsic"]),
-                                 color='steelblue', linewidth=1.2,
-                                 alpha=0.7, label='Intrinsic')
-            self.ax_rewards.plot(steps_x, list(self.hist["r_gemini"]),
-                                 color='gold', linewidth=1.5,
-                                 label='Gemini ER')
-            self.ax_rewards.plot(steps_x, list(self.hist["r_total"]),
-                                 color='white', linewidth=2,
-                                 label='Total')
-            if len(self.hist["r_total"]) >= 20:
-                ma = np.convolve(list(self.hist["r_total"]),
-                                 np.ones(20)/20, mode='valid')
-                self.ax_rewards.plot(range(19, len(self.hist["r_total"])),
-                                     ma, color='orange', linewidth=2.5,
-                                     linestyle='--', label='Total MA-20')
-        self.ax_rewards.set_title('Rewards', fontsize=9, color='white')
-        self.ax_rewards.legend(fontsize=6, ncol=2)
-        self.ax_rewards.set_facecolor('#111111')
-        self.ax_rewards.tick_params(colors='white')
+            # ── Rewards ────────────────────────────────
+            self.ax_rewards.clear()
+            if self.hist["r_total"]:
+                self.ax_rewards.plot(steps_x, list(self.hist["r_intrinsic"]),
+                                     color='steelblue', linewidth=1.2,
+                                     alpha=0.7, label='Intrinsic')
+                self.ax_rewards.plot(steps_x, list(self.hist["r_gemini"]),
+                                     color='gold', linewidth=1.5,
+                                     label='Gemini ER')
+                self.ax_rewards.plot(steps_x, list(self.hist["r_total"]),
+                                     color='white', linewidth=2,
+                                     label='Total')
+                if len(self.hist["r_total"]) >= 20:
+                    ma = np.convolve(list(self.hist["r_total"]),
+                                     np.ones(20)/20, mode='valid')
+                    self.ax_rewards.plot(range(19, len(self.hist["r_total"])),
+                                         ma, color='orange', linewidth=2.5,
+                                         linestyle='--', label='Total MA-20')
+            self.ax_rewards.set_title('Rewards', fontsize=9, color='white')
+            self.ax_rewards.legend(fontsize=6, ncol=2)
+            self.ax_rewards.set_facecolor('#111111')
+            self.ax_rewards.tick_params(colors='white')
 
-        # ── Panel: Latent-Space (PCA) ──────────────────
-        self.ax_latent.clear()
-        if len(self.latent_points) >= 5:
-            pts    = np.stack(list(self.latent_points))
-            labels = list(self.latent_labels)
-
-            # Einfache PCA (2 Komponenten)
-            pts_c  = pts - pts.mean(axis=0)
-            cov    = pts_c.T @ pts_c / len(pts_c)
-            vals, vecs = np.linalg.eigh(cov)
-            idx    = np.argsort(vals)[::-1]
-            pc     = pts_c @ vecs[:, idx[:2]]
-
-            # Färbung nach Szene
-            scene_map = {s: i for i, s in enumerate([
-                "red_box","blue_ball","green_door","corridor","corner"
-            ])}
-            colors_pca = plt.cm.tab10(
-                [scene_map.get(l, 0)/5 for l in labels]
-            )
-            self.ax_latent.scatter(
-                pc[:,0], pc[:,1], c=colors_pca,
-                s=15, alpha=0.7, zorder=3
-            )
-            # Legende
-            for s, i in scene_map.items():
-                self.ax_latent.scatter(
-                    [], [], c=[plt.cm.tab10(i/5)],
-                    label=s.replace("_"," "), s=30
+            # ── Latent-Space (PCA) ─────────────────────
+            self.ax_latent.clear()
+            if len(self.latent_points) >= 5:
+                pts    = np.stack(list(self.latent_points))
+                labels = list(self.latent_labels)
+                pts_c  = pts - pts.mean(axis=0)
+                cov    = pts_c.T @ pts_c / len(pts_c)
+                vals, vecs = np.linalg.eigh(cov)
+                idx    = np.argsort(vals)[::-1]
+                pc     = pts_c @ vecs[:, idx[:2]]
+                scene_map = {s: i for i, s in enumerate([
+                    "red_box","blue_ball","green_door","corridor","corner"
+                ])}
+                colors_pca = plt.cm.tab10(
+                    [scene_map.get(l, 0)/5 for l in labels]
                 )
-            self.ax_latent.legend(fontsize=5, loc='upper right')
+                self.ax_latent.scatter(
+                    pc[:,0], pc[:,1], c=colors_pca, s=15, alpha=0.7)
+                for s, i in scene_map.items():
+                    self.ax_latent.scatter(
+                        [], [], c=[plt.cm.tab10(i/5)],
+                        label=s.replace("_"," "), s=30)
+                self.ax_latent.legend(fontsize=5, loc='upper right')
+            self.ax_latent.set_title('Latent-Space (PCA)',
+                                     fontsize=9, color='white')
+            self.ax_latent.set_facecolor('#111111')
+            self.ax_latent.tick_params(colors='white')
 
-        self.ax_latent.set_title('Latent-Space (PCA)', fontsize=9,
-                                 color='white')
-        self.ax_latent.set_facecolor('#111111')
-        self.ax_latent.tick_params(colors='white')
+            # ── Gemini-Feedback ────────────────────────
+            self.ax_gemini.clear()
+            self.ax_gemini.set_facecolor('#111111')
+            if self.gemini_events:
+                gem_steps = [ev["step"] for ev in self.gemini_events]
+                gem_rew   = [ev["event"].get("reward", 0)
+                             for ev in self.gemini_events]
+                self.ax_gemini.scatter(
+                    gem_steps, gem_rew,
+                    c=['seagreen' if r>0.6 else 'gold' if r>0.3 else 'tomato'
+                       for r in gem_rew],
+                    s=80, zorder=4, marker='D', label='Gemini ER')
+                self.ax_gemini.vlines(gem_steps, 0, gem_rew,
+                                      colors='gray', linewidth=0.8, alpha=0.5)
+                self.ax_gemini.axhline(0.6, color='seagreen',
+                                       linestyle='--', linewidth=1, alpha=0.6)
+                self.ax_gemini.axhline(0.3, color='gold',
+                                       linestyle='--', linewidth=1, alpha=0.6)
+                last_ev = self.gemini_events[-1]["event"]
+                self.ax_gemini.text(
+                    0.01, 0.02,
+                    f"Step {self.gemini_events[-1]['step']}:\n"
+                    f"r={last_ev.get('reward',0):.3f}  "
+                    f"prog={last_ev.get('goal_progress',0)*100:.0f}%\n"
+                    f"\"{last_ev.get('situation','')}\"",
+                    transform=self.ax_gemini.transAxes,
+                    fontsize=6, verticalalignment='bottom',
+                    fontfamily='monospace', color='lightcyan',
+                    bbox=dict(boxstyle='round',
+                              facecolor='#0d1b2a', alpha=0.8)
+                )
+            self.ax_gemini.set_ylim(-0.05, 1.1)
+            self.ax_gemini.set_title(
+                f'Gemini ER Calls ({len(self.gemini_events)} total)',
+                fontsize=9, color='white')
+            self.ax_gemini.legend(fontsize=6)
+            self.ax_gemini.tick_params(colors='white')
 
-        # ── Panel: Gemini-Feedback ─────────────────────
-        self.ax_gemini.clear()
-        self.ax_gemini.set_facecolor('#111111')
+            # ── Goal Progress ──────────────────────────
+            self.ax_prog.clear()
+            if self.hist["goal_progress"]:
+                prog = list(self.hist["goal_progress"])
+                self.ax_prog.fill_between(steps_x, 0, prog,
+                                          color='seagreen', alpha=0.4)
+                self.ax_prog.plot(steps_x, prog, color='seagreen',
+                                  linewidth=1.5, label='Goal Progress')
+                self.ax_prog.plot(steps_x, list(self.hist["pred_error"]),
+                                  color='tomato', linewidth=1.2,
+                                  alpha=0.7, label='Pred. Error')
+                self.ax_prog.axhline(1.0, color='gold', linestyle='--',
+                                     linewidth=1, label='Ziel erreicht')
+            self.ax_prog.set_title('Goal Progress + Prediction Error',
+                                   fontsize=9, color='white')
+            self.ax_prog.set_ylim(0, 1.15)
+            self.ax_prog.legend(fontsize=6)
+            self.ax_prog.set_facecolor('#111111')
+            self.ax_prog.tick_params(colors='white')
 
-        # Zeitlinie mit Call-Markierungen
-        if self.gemini_events:
-            gem_steps = [ev["step"] for ev in self.gemini_events]
-            gem_rew   = [ev["event"].get("reward", 0)
-                         for ev in self.gemini_events]
-            self.ax_gemini.scatter(
-                gem_steps, gem_rew,
-                c=['seagreen' if r>0.6 else
-                   'gold'     if r>0.3 else
-                   'tomato'   for r in gem_rew],
-                s=80, zorder=4, marker='D', label='Gemini ER'
+            # ── Statistiken ────────────────────────────
+            self.ax_stats.clear(); self.ax_stats.axis('off')
+            fe_now  = list(self.hist["fe"])[-1]       if self.hist["fe"]      else 0
+            r_now   = list(self.hist["r_total"])[-1]  if self.hist["r_total"] else 0
+            rec_now = list(self.hist["recon"])[-1]    if self.hist["recon"]   else 0
+            kl_now  = list(self.hist["kl"])[-1]       if self.hist["kl"]      else 0
+            pe_now  = list(self.hist["pred_error"])[-1] if self.hist["pred_error"] else 0
+            lr_now  = list(self.hist["lr"])[-1]       if self.hist["lr"]      else 0
+            beta_now= list(self.hist["beta"])[-1]     if self.hist["beta"]    else 0
+            gem_int = list(self.hist["gemini_interval"])[-1] \
+                if self.hist["gemini_interval"] else 0
+            self.ax_stats.text(
+                0.03, 0.98,
+                "\n".join([
+                    "── Training ─────────────",
+                    f"Step:      {self._step}",
+                    f"FE:        {fe_now:.5f}",
+                    f"Recon:     {rec_now:.5f}",
+                    f"KL:        {kl_now:.5f}",
+                    f"Pred.Err:  {pe_now:.5f}",
+                    f"Beta:      {beta_now:.4f}",
+                    f"LR:        {lr_now:.2e}",
+                    "", "── Rewards ──────────────",
+                    f"Total:     {r_now:.4f}",
+                    f"Gemini:    {list(self.hist['r_gemini'])[-1] if self.hist['r_gemini'] else 0:.4f}",
+                    f"Intrinsic: {list(self.hist['r_intrinsic'])[-1] if self.hist['r_intrinsic'] else 0:.4f}",
+                    "", "── Gemini ───────────────",
+                    f"Calls:     {len(self.gemini_events)}",
+                    f"Interval:  {gem_int:.0f} Steps",
+                    f"Ziel:      {goal[:25]}",
+                    "", "── Szene ────────────────",
+                    f"{scene}",
+                    "", "── Sync ─────────────────",
+                    "Dashboard: synchron",
+                    "→ was NN gerade sieht",
+                    "Gemini ER: adaptiv",
+                    f"→ letzter Call: Step",
+                    f"  {self.gemini_events[-1]['step'] if self.gemini_events else 0}",
+                ]),
+                transform=self.ax_stats.transAxes,
+                fontsize=7, verticalalignment='top',
+                fontfamily='monospace', color='white',
+                bbox=dict(boxstyle='round', facecolor='#1a1a2e', alpha=0.9)
             )
-            self.ax_gemini.vlines(
-                gem_steps, 0, gem_rew,
-                colors='gray', linewidth=0.8, alpha=0.5
-            )
-            self.ax_gemini.axhline(0.6, color='seagreen',
-                                   linestyle='--', linewidth=1,
-                                   alpha=0.6, label='Gut ≥0.6')
-            self.ax_gemini.axhline(0.3, color='gold',
-                                   linestyle='--', linewidth=1,
-                                   alpha=0.6, label='OK ≥0.3')
 
-        self.ax_gemini.set_ylim(-0.05, 1.1)
-        self.ax_gemini.set_title(
-            f'Gemini ER Calls ({len(self.gemini_events)} total)',
-            fontsize=9, color='white'
-        )
-        self.ax_gemini.legend(fontsize=6)
-        self.ax_gemini.tick_params(colors='white')
-
-        # Letztes Gemini-Feedback als Text
-        if self.gemini_events:
-            last_ev = self.gemini_events[-1]["event"]
-            txt = (f"Step {self.gemini_events[-1]['step']}:\n"
-                   f"r={last_ev.get('reward',0):.3f}  "
-                   f"prog={last_ev.get('goal_progress',0)*100:.0f}%\n"
-                   f"\"{last_ev.get('situation','')[:40]}\"\n"
-                   f"→ {last_ev.get('recommendation','')[:35]}")
-            self.ax_gemini.text(
-                0.01, 0.02, txt,
-                transform=self.ax_gemini.transAxes,
-                fontsize=6.5, verticalalignment='bottom',
-                fontfamily='monospace', color='lightcyan',
-                bbox=dict(boxstyle='round',
-                          facecolor='#0d1b2a', alpha=0.8)
-            )
-
-        # ── Panel: Goal Progress ───────────────────────
-        self.ax_prog.clear()
-        if self.hist["goal_progress"]:
-            prog = list(self.hist["goal_progress"])
-            self.ax_prog.fill_between(steps_x, 0, prog,
-                                      color='seagreen', alpha=0.4)
-            self.ax_prog.plot(steps_x, prog,
-                              color='seagreen', linewidth=1.5,
-                              label='Goal Progress')
-            self.ax_prog.plot(steps_x,
-                              list(self.hist["pred_error"]),
-                              color='tomato', linewidth=1.2,
-                              alpha=0.7, label='Pred. Error')
-            self.ax_prog.axhline(1.0, color='gold', linestyle='--',
-                                 linewidth=1, label='Ziel erreicht')
-        self.ax_prog.set_title('Goal Progress + Prediction Error',
-                               fontsize=9, color='white')
-        self.ax_prog.set_ylim(0, 1.15)
-        self.ax_prog.legend(fontsize=6)
-        self.ax_prog.set_facecolor('#111111')
-        self.ax_prog.tick_params(colors='white')
-
-        # ── Panel: Statistiken ─────────────────────────
-        self.ax_stats.clear(); self.ax_stats.axis('off')
-
-        fe_now   = list(self.hist["fe"])[-1]   if self.hist["fe"]   else 0
-        r_now    = list(self.hist["r_total"])[-1] if self.hist["r_total"] else 0
-        rec_now  = list(self.hist["recon"])[-1] if self.hist["recon"] else 0
-        kl_now   = list(self.hist["kl"])[-1]   if self.hist["kl"]   else 0
-        pe_now   = list(self.hist["pred_error"])[-1] if self.hist["pred_error"] else 0
-        lr_now   = list(self.hist["lr"])[-1]   if self.hist["lr"]   else 0
-        beta_now = list(self.hist["beta"])[-1] if self.hist["beta"] else 0
-        gem_int  = list(self.hist["gemini_interval"])[-1] \
-            if self.hist["gemini_interval"] else 0
-
-        lines = [
-            "── Training ─────────────",
-            f"Step:      {self._step}",
-            f"FE:        {fe_now:.5f}",
-            f"Recon:     {rec_now:.5f}",
-            f"KL:        {kl_now:.5f}",
-            f"Pred.Err:  {pe_now:.5f}",
-            f"Beta:      {beta_now:.4f}",
-            f"LR:        {lr_now:.2e}",
-            "",
-            "── Rewards ──────────────",
-            f"Total:     {r_now:.4f}",
-            f"Gemini:    {list(self.hist['r_gemini'])[-1] if self.hist['r_gemini'] else 0:.4f}",
-            f"Intrinsic: {list(self.hist['r_intrinsic'])[-1] if self.hist['r_intrinsic'] else 0:.4f}",
-            "",
-            "── Gemini ───────────────",
-            f"Calls:     {len(self.gemini_events)}",
-            f"Interval:  {gem_int:.0f} Steps",
-            f"Ziel:      {goal[:25]}",
-            "",
-            "── Szene ────────────────",
-            f"{scene}",
-            "",
-            "── Bausteine ────────────",
-            "B02 Replay  B03 Temporal",
-            "B04 Encoder B05 CLIP",
-            "B07 Transf. B08 Decoder",
-            "B09 Action  B10 FreeEnrg",
-            "B12 Curious B13 GemText",
-            "B14 Adaptiv B15 Rewards",
-            "B16 FullInt B17 Interface",
-            "B18 Dashboard ← hier",
-        ]
-        self.ax_stats.text(
-            0.03, 0.98, "\n".join(lines),
-            transform=self.ax_stats.transAxes,
-            fontsize=7, verticalalignment='top',
-            fontfamily='monospace', color='white',
-            bbox=dict(boxstyle='round',
-                      facecolor='#1a1a2e', alpha=0.9)
-        )
-
+        # ── Immer: figure rendern ──────────────────
+        self.fig.canvas.draw_idle()
         plt.pause(0.001)
 
     def close(self):
