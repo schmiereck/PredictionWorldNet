@@ -134,6 +134,9 @@ class OverheadMapView:
         self.cam_pan_rad  = 0.0
         self.cam_tilt_rad = 0.0
 
+        # MiniWorld Environment (optional, für echte Wände/Objekte)
+        self._mw_env = None
+
     def setup(self):
         """Öffnet das Karten-Fenster."""
         plt.ion()   # Interactive Mode
@@ -162,6 +165,103 @@ class OverheadMapView:
         plt.pause(0.001)
         return self
 
+    def set_miniworld_env(self, env):
+        """
+        Setzt das MiniWorld Gym Environment für echte Wand-/Objekt-Anzeige.
+        Erwartet das gym-wrapped env (env.unwrapped wird intern genutzt).
+        """
+        self._mw_env = env
+
+    def _draw_miniworld(self):
+        """
+        Zeichnet Wände und Objekte aus MiniWorld.
+        Koordinaten-Mapping: MiniWorld (x, z) → Overhead (x, y).
+        MiniWorld y-Achse ist vertikal (Höhe), z ist Tiefe.
+        """
+        if self._mw_env is None:
+            return False
+
+        try:
+            mw = getattr(self._mw_env, 'unwrapped', self._mw_env)
+        except Exception:
+            return False
+
+        # Räume (Wände) zeichnen
+        try:
+            for room in mw.rooms:
+                outline = room.outline  # shape (N, 3) mit [x, y, z]
+                if outline is not None and len(outline) >= 3:
+                    # (x, z) extrahieren → 2D Polygon
+                    poly_x = [p[0] for p in outline]
+                    poly_y = [p[2] for p in outline]
+                    # Polygon schließen
+                    poly_x.append(poly_x[0])
+                    poly_y.append(poly_y[0])
+                    # Boden als gefülltes Polygon
+                    self.ax.fill(poly_x, poly_y,
+                                 color='#1a2a3a', alpha=0.4, zorder=1)
+                    # Wände als dicke Linien
+                    self.ax.plot(poly_x, poly_y,
+                                 color='#60a0c0', linewidth=2.5,
+                                 solid_capstyle='round', zorder=2)
+        except Exception:
+            pass
+
+        # Entities (Objekte) zeichnen
+        try:
+            for ent in mw.entities:
+                if ent is mw.agent:
+                    continue
+                ex, _, ez = ent.pos
+                # Farbe aus Entity ableiten
+                ent_color = '#ffffff'
+                ent_marker = 'o'
+                ent_label = type(ent).__name__
+                try:
+                    if hasattr(ent, 'color'):
+                        c = ent.color
+                        if hasattr(c, '__len__') and len(c) >= 3:
+                            ent_color = '#{:02x}{:02x}{:02x}'.format(
+                                int(c[0] * 255) if c[0] <= 1 else int(c[0]),
+                                int(c[1] * 255) if c[1] <= 1 else int(c[1]),
+                                int(c[2] * 255) if c[2] <= 1 else int(c[2]),
+                            )
+                except Exception:
+                    pass
+                # Marker nach Typ
+                name = type(ent).__name__.lower()
+                if 'box' in name:
+                    ent_marker = 's'
+                elif 'ball' in name:
+                    ent_marker = 'o'
+                elif 'key' in name:
+                    ent_marker = 'P'
+                self.ax.scatter(
+                    float(ex), float(ez),
+                    c=ent_color, marker=ent_marker,
+                    s=120, zorder=5, edgecolors='white',
+                    linewidths=0.8, label=ent_label
+                )
+        except Exception:
+            pass
+
+        return True
+
+    def _draw_miniworld_pose(self):
+        """Übernimmt die echte Agenten-Position aus MiniWorld."""
+        if self._mw_env is None:
+            return False
+        try:
+            mw = getattr(self._mw_env, 'unwrapped', self._mw_env)
+            ax, _, az = mw.agent.pos
+            agent_dir = mw.agent.dir
+            self.pose.x = float(ax)
+            self.pose.y = float(az)
+            self.pose.heading = float(-agent_dir)
+            return True
+        except Exception:
+            return False
+
     def update(self, action_ros2: dict, scene: str = "",
                gemini_event: dict = None):
         """
@@ -189,7 +289,10 @@ class OverheadMapView:
         old_pos     = self.pose.pos.copy()
         old_heading = self.pose.heading
 
-        self.pose.apply(lx, az, ar, dur)
+        # MiniWorld: echte Position/Richtung übernehmen (kein Dead Reckoning)
+        has_miniworld = self._draw_miniworld_pose()
+        if not has_miniworld:
+            self.pose.apply(lx, az, ar, dur)
 
         dist = float(np.linalg.norm(self.pose.pos - old_pos))
         self.total_dist += dist
@@ -217,6 +320,9 @@ class OverheadMapView:
         # ── Map zeichnen ───────────────────────────────
         self.ax.clear()
         self.ax.set_facecolor('#0a0f1a')
+
+        # ── MiniWorld: Wände und Objekte ───────────────
+        has_mw = self._draw_miniworld()
         # ── Auto-Zoom: Bereich an Roboter anpassen ────
         # Alle bisherigen Positionen berücksichtigen
         if len(self.trail) >= 2:
@@ -238,7 +344,8 @@ class OverheadMapView:
         self.ax.set_xlim(cx - size/2, cx + size/2)
         self.ax.set_ylim(cy - size/2, cy + size/2)
         self.ax.set_aspect('equal')
-        self.ax.set_title('Draufsicht (Dead Reckoning)',
+        title_mode = 'MiniWorld (echte Position)' if has_mw else 'Dead Reckoning'
+        self.ax.set_title(f'Draufsicht ({title_mode})',
                           fontsize=9, color='white')
         self.ax.tick_params(colors='gray', labelsize=7)
         self.ax.grid(True, color='#1a2a1a', linewidth=0.5)

@@ -382,7 +382,13 @@ class Orchestrator:
                 title=f"Draufsicht  |  {self.cfg['mode'].upper()}"
             )
             self.overhead.setup()
-            print("Overhead Map:   ✓")
+            # MiniWorld-Env übergeben für echte Wände/Objekte/Position
+            if isinstance(self.obs_source, MiniWorldObsSource) \
+                    and self.obs_source.is_miniworld:
+                self.overhead.set_miniworld_env(self.obs_source._env)
+                print("Overhead Map:   ✓  (MiniWorld Wände + Objekte)")
+            else:
+                print("Overhead Map:   ✓")
         else:
             print("Overhead Map:   ✗ (OverheadMapView.py nicht gefunden)")
         print()
