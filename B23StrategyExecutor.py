@@ -1,0 +1,386 @@
+"""
+B23 – Strategy Executor
+========================
+Führt die von B22 generierten Strategien aus.
+
+Kernaufgaben:
+    1. Condition-Erkennung aus Bilddaten (obs_info)
+    2. Regelauswertung (höchste Priorität gewinnt)
+    3. Action-Vektor erzeugen
+    4. Sigma-basiertes Blending mit NN-Aktionen
+
+Blending-Logik:
+    blend = sigmoid((mean_sigma - threshold) * steepness)
+    final = blend * strategy_action + (1 - blend) * nn_action
+
+    Hohe Sigma (NN unsicher) → Strategie dominiert
+    Niedrige Sigma (NN sicher) → NN dominiert
+"""
+
+from __future__ import annotations
+import numpy as np
+from typing import Optional, Dict
+from dataclasses import dataclass
+from collections import deque
+
+from B22StrategyGenerator import (
+    Strategy, Rule, ACTION_VECTORS, KNOWN_CONDITIONS
+)
+
+
+# ─────────────────────────────────────────────
+# CONDITION EVALUATOR
+# ─────────────────────────────────────────────
+
+class ConditionEvaluator:
+    """
+    Wertet Bedingungen anhand von Bilddaten und Zustand aus.
+    Austauschbar: Kann durch ML-basierte Erkennung ersetzt werden.
+    """
+
+    def __init__(self,
+                 target_color: str = "red",
+                 stuck_threshold: int = 15,
+                 timeout_steps: int = 50):
+        self.target_color     = target_color
+        self.stuck_threshold  = stuck_threshold
+        self.timeout_steps    = timeout_steps
+
+        # State-Tracking
+        self._no_progress_count = 0
+        self._last_obs_hash     = 0
+        self._stuck_count       = 0
+        self._pan_position      = 0.0   # -1.0 (links) bis 1.0 (rechts)
+        self._pan_direction     = -1     # -1 = nach links, +1 = nach rechts
+        self._pan_steps         = 0
+        self._last_reward       = 0.0
+
+    def evaluate(self, obs_info: dict) -> Dict[str, bool]:
+        """
+        Wertet alle bekannten Conditions aus.
+
+        obs_info Keys:
+            image_16x16: np.ndarray (16,16,3) uint8
+            reward: float (letzter Gemini-Reward)
+            sigma: float (NN-Unsicherheit)
+            cam_pan: float (-1..1, aktuelle Kamera-Position)
+            step: int
+        """
+        img = obs_info.get("image_16x16")
+        reward = obs_info.get("reward", 0.0)
+        cam_pan = obs_info.get("cam_pan", 0.0)
+
+        # Farb-Erkennung
+        target_mask = self._detect_target(img)
+        target_ratio = np.mean(target_mask) if target_mask is not None else 0.0
+
+        # Position im Bild (links/rechts/zentriert)
+        target_pos = self._target_position(target_mask) if target_mask is not None else "none"
+
+        # Stuck-Erkennung
+        if img is not None:
+            obs_hash = hash(img.tobytes()) % (2**32)
+            if obs_hash == self._last_obs_hash:
+                self._stuck_count += 1
+            else:
+                self._stuck_count = 0
+            self._last_obs_hash = obs_hash
+
+        # Fortschritts-Tracking
+        if reward <= self._last_reward + 0.01:
+            self._no_progress_count += 1
+        else:
+            self._no_progress_count = 0
+        self._last_reward = reward
+
+        # Pan-Tracking
+        self._pan_position = cam_pan
+        pan_done = abs(cam_pan) > 0.8 and self._pan_steps > 5
+        self._pan_steps += 1
+
+        conditions = {
+            "no_target":       target_ratio < 0.02,
+            "target_left":     target_pos == "left",
+            "target_right":    target_pos == "right",
+            "target_centered": target_pos == "center",
+            "target_close":    target_ratio > 0.15,
+            "target_far":      0.02 <= target_ratio <= 0.15,
+            "pan_done":        pan_done,
+            "stuck":           self._stuck_count >= self.stuck_threshold,
+            "timeout":         self._no_progress_count >= self.timeout_steps,
+            "always":          True,
+        }
+
+        return conditions
+
+    def reset_pan(self):
+        """Wird aufgerufen wenn ein neuer Scan startet."""
+        self._pan_steps = 0
+
+    def _detect_target(self, img: np.ndarray) -> Optional[np.ndarray]:
+        """Erkennt Ziel-Pixel im 16×16 Bild basierend auf Farbe."""
+        if img is None:
+            return None
+
+        f = img.astype(np.float32) / 255.0 if img.dtype == np.uint8 else img
+        r, g, b = f[:,:,0], f[:,:,1], f[:,:,2]
+
+        color = self.target_color.lower()
+        if color == "red":
+            mask = (r > g + 0.1) & (r > b + 0.1) & (r > 0.3)
+        elif color == "green":
+            mask = (g > r + 0.1) & (g > b + 0.1) & (g > 0.3)
+        elif color == "blue":
+            mask = (b > r + 0.1) & (b > g + 0.1) & (b > 0.3)
+        elif color == "yellow":
+            mask = (r > 0.4) & (g > 0.4) & (b < 0.3)
+        else:
+            # Unbekannte Farbe: "etwas Auffälliges" suchen
+            gray = (r + g + b) / 3.0
+            deviation = np.abs(r - gray) + np.abs(g - gray) + np.abs(b - gray)
+            mask = deviation > 0.3
+
+        return mask
+
+    def _target_position(self, mask: np.ndarray) -> str:
+        """Bestimmt ob das Ziel links, rechts oder zentriert ist."""
+        if mask is None or np.sum(mask) < 3:
+            return "none"
+
+        h, w = mask.shape
+        third = w // 3
+
+        left_count   = np.sum(mask[:, :third])
+        center_count = np.sum(mask[:, third:2*third])
+        right_count  = np.sum(mask[:, 2*third:])
+
+        total = left_count + center_count + right_count
+        if total < 3:
+            return "none"
+
+        if center_count >= left_count and center_count >= right_count:
+            return "center"
+        elif left_count > right_count:
+            return "left"
+        else:
+            return "right"
+
+    def set_target_color(self, goal: str):
+        """Extrahiert die Zielfarbe aus dem Goal-String."""
+        g = goal.lower()
+        for color in ["red", "green", "blue", "yellow", "orange", "purple"]:
+            if color in g:
+                self.target_color = color
+                return
+        # Deutsche Farbnamen
+        for de, en in [("rot", "red"), ("grün", "green"), ("blau", "blue"),
+                       ("gelb", "yellow")]:
+            if de in g:
+                self.target_color = en
+                return
+
+
+# ─────────────────────────────────────────────
+# STRATEGY EXECUTOR
+# ─────────────────────────────────────────────
+
+class StrategyExecutor:
+    """
+    Führt eine Strategy aus und liefert Action-Vektoren.
+
+    Nutzung:
+        executor = StrategyExecutor()
+        executor.set_strategy(strategy)
+
+        # Im Loop:
+        action = executor.get_action(obs_info)
+        if action is not None:
+            blended = executor.blend(action, nn_action, sigma)
+    """
+
+    def __init__(self,
+                 sigma_threshold: float = 0.4,
+                 sigma_steepness: float = 8.0,
+                 min_blend: float = 0.1,
+                 max_blend: float = 0.9):
+        self._strategy       = None
+        self._evaluator      = ConditionEvaluator()
+        self._sigma_threshold = sigma_threshold
+        self._sigma_steepness = sigma_steepness
+        self._min_blend       = min_blend
+        self._max_blend       = max_blend
+
+        # Aktuelle Aktion (wird für duration Steps beibehalten)
+        self._current_action_name  = None
+        self._current_action_vec   = None
+        self._remaining_steps      = 0
+        self._last_matched_rule    = None
+
+        # Statistiken
+        self.stats = {
+            "strategy_steps":  0,
+            "nn_steps":        0,
+            "blended_steps":   0,
+            "rules_matched":   {},
+        }
+
+    def set_strategy(self, strategy: Strategy):
+        """Setzt eine neue Strategie."""
+        self._strategy = strategy
+        self._current_action_name = None
+        self._remaining_steps = 0
+        self._evaluator.set_target_color(strategy.goal)
+        self._evaluator.reset_pan()
+        print(f"  Executor: Strategie gesetzt")
+        print(f"  {strategy}")
+
+    @property
+    def has_strategy(self) -> bool:
+        return self._strategy is not None
+
+    @property
+    def active_rule(self) -> Optional[str]:
+        """Gibt die aktuell aktive Regel zurück."""
+        if self._last_matched_rule:
+            return f"{self._last_matched_rule.condition} → {self._last_matched_rule.action}"
+        return None
+
+    def get_action(self, obs_info: dict) -> Optional[np.ndarray]:
+        """
+        Bestimmt die Strategie-Aktion basierend auf Conditions.
+
+        Returns:
+            np.ndarray (6,) mit Action-Werten, oder None wenn keine Regel greift.
+        """
+        if self._strategy is None:
+            return None
+
+        # Laufende Aktion fortsetzen?
+        if self._remaining_steps > 0:
+            self._remaining_steps -= 1
+            return self._current_action_vec.copy()
+
+        # Conditions auswerten
+        conditions = self._evaluator.evaluate(obs_info)
+
+        # Regeln nach Priorität prüfen
+        for rule in self._strategy.sorted_rules():
+            if conditions.get(rule.condition, False):
+                self._last_matched_rule = rule
+                self._current_action_name = rule.action
+                self._remaining_steps = rule.duration - 1
+
+                # Action-Vektor holen
+                vec = np.array(ACTION_VECTORS.get(
+                    rule.action, [0, 0, 0, 0, 0, 0]
+                ), dtype=np.float32)
+
+                # Spezialbehandlung: random_turn
+                if rule.action == "random_turn":
+                    vec[1] = np.random.choice([-0.7, 0.7])
+
+                # Spezialbehandlung: scan_panorama (alternierend links/rechts)
+                if rule.action == "scan_panorama":
+                    self._evaluator.reset_pan()
+
+                self._current_action_vec = vec
+
+                # Statistik
+                key = f"{rule.condition}→{rule.action}"
+                self.stats["rules_matched"][key] = \
+                    self.stats["rules_matched"].get(key, 0) + 1
+
+                return vec.copy()
+
+        return None  # Keine Regel hat gepasst → NN entscheidet
+
+    def blend(self, strategy_action: np.ndarray,
+              nn_action: np.ndarray,
+              sigma: float) -> np.ndarray:
+        """
+        Blendet Strategie- und NN-Aktion basierend auf Sigma.
+
+        sigma hoch → mehr Strategie (NN unsicher)
+        sigma niedrig → mehr NN (NN sicher)
+        """
+        factor = self.blend_factor(sigma)
+
+        if factor > 0.95:
+            self.stats["strategy_steps"] += 1
+        elif factor < 0.05:
+            self.stats["nn_steps"] += 1
+        else:
+            self.stats["blended_steps"] += 1
+
+        return factor * strategy_action + (1 - factor) * nn_action
+
+    def blend_factor(self, sigma: float) -> float:
+        """
+        Berechnet den Blend-Faktor (0 = nur NN, 1 = nur Strategie).
+        Sigmoid-Funktion für smooth Übergang.
+        """
+        x = (sigma - self._sigma_threshold) * self._sigma_steepness
+        raw = 1.0 / (1.0 + np.exp(-x))
+        return np.clip(raw, self._min_blend, self._max_blend)
+
+    def summary(self) -> dict:
+        """Statistik-Zusammenfassung."""
+        total = (self.stats["strategy_steps"] +
+                 self.stats["nn_steps"] +
+                 self.stats["blended_steps"])
+        return {
+            "total_steps":     total,
+            "strategy_pct":    self.stats["strategy_steps"] / max(1, total) * 100,
+            "nn_pct":          self.stats["nn_steps"] / max(1, total) * 100,
+            "blended_pct":     self.stats["blended_steps"] / max(1, total) * 100,
+            "top_rules":       sorted(self.stats["rules_matched"].items(),
+                                      key=lambda x: x[1], reverse=True)[:5],
+            "active_rule":     self.active_rule,
+        }
+
+
+# ─────────────────────────────────────────────
+# DEMO
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    from B22StrategyGenerator import MockStrategyGenerator
+
+    print("=== StrategyExecutor Demo ===\n")
+
+    gen = MockStrategyGenerator()
+    strategy = gen.generate("find the red box")
+
+    executor = StrategyExecutor()
+    executor.set_strategy(strategy)
+
+    # Simuliere einige Steps
+    for i in range(20):
+        # Fake obs_info
+        img = np.random.randint(0, 255, (16, 16, 3), dtype=np.uint8)
+        # Ab Step 10: rotes Objekt links einblenden
+        if i >= 10:
+            img[:, :5, 0] = 200
+            img[:, :5, 1] = 30
+            img[:, :5, 2] = 30
+
+        obs_info = {
+            "image_16x16": img,
+            "reward": 0.1 if i < 10 else 0.5,
+            "sigma": 0.6 if i < 15 else 0.2,
+            "cam_pan": 0.0,
+            "step": i,
+        }
+
+        action = executor.get_action(obs_info)
+        if action is not None:
+            nn_action = np.random.randn(6).astype(np.float32) * 0.3
+            blended = executor.blend(action, nn_action, obs_info["sigma"])
+            rule = executor.active_rule
+            bf = executor.blend_factor(obs_info["sigma"])
+            print(f"  Step {i:2d}: {rule:30s} blend={bf:.2f}")
+        else:
+            print(f"  Step {i:2d}: NN entscheidet")
+
+    print()
+    print("Statistik:", executor.summary())

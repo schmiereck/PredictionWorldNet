@@ -6,16 +6,16 @@ ohne RL, ohne Gemini, ohne Transformer.
 
 Kann wiederholt auf dasselbe Netz angewendet werden:
     1. Lauf: python B20PreTrainVAE.py --epochs 50
-    2. Lauf: python B20PreTrainVAE.py --checkpoint checkpoints/pwn_pretrain_vae_*.pt --epochs 50
+    2. Lauf: python B20PreTrainVAE.py --checkpoint checkpoints/pwn_checkpoint_*.pt --epochs 50
 
 Datenquellen:
     --source miniworld   → Frames aus MiniWorld Gym (zufällige Exploration)
     --source mock        → Frames aus draw_scene() (B16 Mock-Szenen)
 
 Ergebnis:
-    checkpoints/pwn_pretrain_vae_<timestamp>.pt
+    checkpoints/pwn_checkpoint_<timestamp>.pt
     → Kann in B19 geladen werden:
-      python B19Orchestrator.py --checkpoint checkpoints/pwn_pretrain_vae_*.pt
+      python B19Orchestrator.py --checkpoint checkpoints/pwn_checkpoint_*.pt
 """
 
 import os
@@ -334,7 +334,7 @@ def main():
                              "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_path = os.path.join(ckpt_dir, f"pwn_pretrain_vae_{ts}.pt")
+    ckpt_path = os.path.join(ckpt_dir, f"pwn_checkpoint_{ts}.pt")
 
     checkpoint = {
         "encoder":      encoder.state_dict(),

@@ -17,7 +17,8 @@ Vorgehen:
     5. goal_proj (512→64) wird trainiert:
        Contrastive Loss: passende Paare (label, frame) → nahe Vektoren
 
-    python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_pretrain_vae_*.pt
+    python B21PreTrainCLIP.py
+    python B21PreTrainCLIP.py --checkpoint checkpoints/pwn_checkpoint_*.pt --epochs 60
 """
 
 import os
@@ -362,8 +363,9 @@ def main():
         description="B21 – Pre-Training CLIP Goal-Projektion"
     )
     parser.add_argument(
-        "--vae-checkpoint", type=str, default=None,
-        help="VAE-Checkpoint laden (Encoder-Gewichte)"
+        "--checkpoint", type=str,
+        default="checkpoints/pwn_checkpoint_*.pt",
+        help="Checkpoint laden (Encoder + ggf. goal_proj)"
     )
     parser.add_argument(
         "--source", choices=["miniworld", "mock"], default="miniworld",
@@ -381,10 +383,6 @@ def main():
         "--epochs", type=int, default=30,
         help="Trainings-Epochen"
     )
-    parser.add_argument(
-        "--checkpoint", type=str, default=None,
-        help="Bestehenden CLIP-Checkpoint laden"
-    )
     args = parser.parse_args()
 
     print("=" * 55)
@@ -396,28 +394,21 @@ def main():
     encoder = Encoder()
     goal_proj = nn.Linear(512, LATENT_DIM, bias=False)
 
-    # ── VAE-Gewichte laden ─────────────────────────────
-    if args.vae_checkpoint:
-        print(f"Lade VAE-Checkpoint: {args.vae_checkpoint}")
-        ckpt_path = resolve_checkpoint(args.vae_checkpoint)
-        print(f"  → {ckpt_path}")
+    # ── Checkpoint laden (Encoder + ggf. goal_proj) ────
+    try:
+        ckpt_path = resolve_checkpoint(args.checkpoint)
+        print(f"Lade Checkpoint: {ckpt_path}")
         ckpt = torch.load(ckpt_path, weights_only=False)
         encoder.load_state_dict(ckpt["encoder"])
         print("  Encoder geladen ✓")
-    else:
-        print("WARNUNG: Kein VAE-Checkpoint angegeben!")
-        print("  Encoder hat zufällige Gewichte → Qualität wird schlecht sein.")
-        print()
-
-    # ── Optional: bestehenden CLIP-Checkpoint laden ────
-    if args.checkpoint:
-        print(f"Lade CLIP-Checkpoint: {args.checkpoint}")
-        ckpt_path = resolve_checkpoint(args.checkpoint)
-        print(f"  → {ckpt_path}")
-        ckpt = torch.load(ckpt_path, weights_only=False)
-        if "goal_proj" in ckpt:
+        if "goal_proj" in ckpt and ckpt["goal_proj"] is not None:
             goal_proj.load_state_dict(ckpt["goal_proj"])
-            print("  goal_proj geladen ✓")
+            print("  goal_proj geladen ✓ (Nachtraining)")
+        print()
+    except FileNotFoundError:
+        print("WARNUNG: Kein Checkpoint gefunden!")
+        print("  Encoder hat zufällige Gewichte → erst B20 ausführen.")
+        print()
 
     # ── CLIP Text Encoder ──────────────────────────────
     clip_encoder = ClipTextEncoder()
@@ -436,32 +427,28 @@ def main():
         epochs=args.epochs,
     )
 
-    # ── Checkpoint speichern ───────────────────────────
+    # ── Checkpoint speichern (VAE-Basis + goal_proj) ─────
     import datetime
     ckpt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_path = os.path.join(ckpt_dir, f"pwn_pretrain_clip_{ts}.pt")
+    ckpt_path = os.path.join(ckpt_dir, f"pwn_checkpoint_{ts}.pt")
 
-    checkpoint = {
-        "encoder":      encoder.state_dict(),
-        "decoder":      None,
-        "goal_proj":    goal_proj.state_dict(),
-        "total_steps":  0,
-        "train_steps":  0,
-        "beta":         0.0,
-        "current_goal": "pretrain_clip",
-        "config":       {"source": args.source, "frames": args.frames,
-                         "epochs": args.epochs},
-        "constants": {
-            "LATENT_DIM": LATENT_DIM,
-            "D_MODEL":    128,
-            "ACTION_DIM": 6,
-        },
-        "tag":          "pretrain_clip",
-        "result":       result,
-    }
+    # Basis-Checkpoint übernehmen (enthält Decoder, Transformer etc.)
+    try:
+        base_path = resolve_checkpoint(args.checkpoint)
+        checkpoint = torch.load(base_path, weights_only=False)
+    except FileNotFoundError:
+        checkpoint = {}
+
+    # goal_proj hinzufügen/aktualisieren
+    checkpoint["goal_proj"]    = goal_proj.state_dict()
+    checkpoint["encoder"]      = encoder.state_dict()
+    checkpoint["tag"]          = "pretrain_clip"
+    checkpoint["current_goal"] = "pretrain_clip"
+    checkpoint["result_clip"]  = result
+
     torch.save(checkpoint, ckpt_path)
 
     print(f"\n  Checkpoint gespeichert: {ckpt_path}")

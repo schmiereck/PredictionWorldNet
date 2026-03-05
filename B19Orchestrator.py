@@ -102,6 +102,19 @@ except Exception as e:
     print(f"  OverheadMapView nicht gefunden: {e}")
     OverheadMapView = None
 
+try:
+    _b22 = _load("B22StrategyGenerator.py")
+    _b23 = _load("B23StrategyExecutor.py")
+    MockStrategyGenerator  = _b22.MockStrategyGenerator
+    GeminiStrategyGenerator = _b22.GeminiStrategyGenerator
+    StrategyExecutor       = _b23.StrategyExecutor
+    print("  B22+B23 Strategie         ✓")
+except Exception as e:
+    print(f"  B22/B23 nicht gefunden: {e}")
+    MockStrategyGenerator = None
+    GeminiStrategyGenerator = None
+    StrategyExecutor = None
+
 print()
 
 import matplotlib
@@ -296,6 +309,10 @@ class Orchestrator:
         self.overhead     = None
         self.gemini       = None
 
+        # Strategie-System (B22+B23)
+        self.strategy_gen  = None
+        self.strategy_exec = None
+
         # Letztes Gemini-Hochreis-Bild (persistiert zwischen Updates)
         self._last_gemini_image = None
 
@@ -407,6 +424,25 @@ class Orchestrator:
             print("Overhead Map:   ✗ (OverheadMapView.py nicht gefunden)")
         print()
 
+        # ── Strategie-System (B22+B23) ────────────────
+        if StrategyExecutor is not None:
+            self.strategy_exec = StrategyExecutor()
+            # Gemini oder Mock Strategy Generator
+            if self.gemini.mode == "gemini" and GeminiStrategyGenerator is not None:
+                self.strategy_gen = GeminiStrategyGenerator(
+                    client=self.gemini.client,
+                )
+            else:
+                self.strategy_gen = MockStrategyGenerator()
+            # Initiale Strategie generieren
+            goal_text = self.ml_system.current_goal or "explore the environment"
+            strategy = self.strategy_gen.generate(goal_text)
+            self.strategy_exec.set_strategy(strategy)
+            print(f"Strategie:      ✓  ({strategy.source})")
+        else:
+            print("Strategie:      ✗ (B22/B23 nicht gefunden)")
+        print()
+
         return self
 
     def _get_miniworld_action(self, step: int) -> np.ndarray:
@@ -431,12 +467,17 @@ class Orchestrator:
         """Haupt-Loop."""
         n = self.cfg["n_steps"]
         mode = self.cfg["mode"]
-        print(f"Starte Training-Loop: {n} Steps\n")
+        unlimited = (n <= 0)
+        if unlimited:
+            print("Starte Training-Loop: unbegrenzt (Fenster-X oder Ctrl+C zum Beenden)\n")
+        else:
+            print(f"Starte Training-Loop: {n} Steps\n")
 
         # Erste Obs holen
         obs = self.robot.obs.get_observation()
 
-        for step in range(n):
+        step = 0
+        while unlimited or step < n:
             self._step = step
 
             # ── Fenster geschlossen? → sauber beenden ──
@@ -459,12 +500,47 @@ class Orchestrator:
                     )
                     print(f"  [Step {step:4d}] Ziel → "
                           f"'{result['primary_goal']}'")
+                    # Neue Strategie für neues Ziel
+                    if self.strategy_gen is not None:
+                        strategy = self.strategy_gen.generate(result['primary_goal'])
+                        self.strategy_exec.set_strategy(strategy)
             elif mode == "miniworld":
                 self._scene = "miniworld"
                 self._goal  = self.ml_system.current_goal
 
-            # ── Aktion aus ML-System ───────────────────
-            if mode == "miniworld":
+            # ── Aktion aus ML-System + Strategie ──────
+            ml_result_pre = self.ml_system.step(
+                obs_np=obs.image,
+                action_np=np.zeros(6, dtype=np.float32),  # Dummy für Vorhersage
+                next_obs_np=obs.image,
+                scene=self._scene,
+                train=False,  # Nur Vorhersage, kein Training
+            ) if False else None  # Vorhersage kommt nach dem Step
+
+            if mode == "miniworld" and self.strategy_exec is not None:
+                # Strategie-Aktion berechnen
+                obs_info = {
+                    "image_16x16": obs.image,
+                    "reward":      self.ml_system.metrics["r_total"][-1]
+                                   if self.ml_system.metrics["r_total"] else 0.0,
+                    "sigma":       0.5,  # wird nach ml_result aktualisiert
+                    "cam_pan":     0.0,
+                    "step":        step,
+                }
+                strategy_action = self.strategy_exec.get_action(obs_info)
+
+                if strategy_action is not None:
+                    # NN-Aktion als Fallback/Blending-Partner
+                    nn_action = self._get_miniworld_action(step)
+                    # Sigma aus letztem Step (wenn verfügbar)
+                    last_sigma = (self.ml_system.metrics.get("sigma", [0.5])[-1]
+                                  if self.ml_system.metrics.get("sigma") else 0.5)
+                    act_arr = self.strategy_exec.blend(
+                        strategy_action, nn_action, last_sigma
+                    )
+                else:
+                    act_arr = self._get_miniworld_action(step)
+            elif mode == "miniworld":
                 act_arr = self._get_miniworld_action(step)
             else:
                 act_arr = np.clip(
@@ -579,6 +655,7 @@ class Orchestrator:
                 )
 
             obs = next_obs
+            step += 1
 
         self._print_summary()
 
@@ -610,6 +687,18 @@ class Orchestrator:
         print()
         print("Latenz:")
         print(f"  Ø {self.robot.avg_latency_ms:.2f}ms/Step")
+
+        if self.strategy_exec is not None:
+            ss = self.strategy_exec.summary()
+            print()
+            print("Strategie (B22/B23):")
+            print(f"  Strategie-Steps: {ss['strategy_pct']:.0f}%")
+            print(f"  NN-Steps:        {ss['nn_pct']:.0f}%")
+            print(f"  Blended:         {ss['blended_pct']:.0f}%")
+            if ss['top_rules']:
+                print(f"  Top-Regeln:")
+                for rule, count in ss['top_rules'][:3]:
+                    print(f"    {rule}: {count}x")
         print()
         print("ROS2-Umstieg:")
         print("  obs  = ROS2ObsSource(node, '/camera/image_raw')")
@@ -623,8 +712,7 @@ class Orchestrator:
 
         # ── Checkpoint speichern (B20) ─────────────────
         if self.cfg.get("save_checkpoint", True):
-            tag = f"live_{self.cfg['mode']}"
-            self.ml_system.save_checkpoint(tag=tag)
+            self.ml_system.save_checkpoint(tag="checkpoint")
 
     def close(self):
         self.robot.close()
@@ -651,8 +739,8 @@ def parse_args():
         help="MiniWorld Gym Environment"
     )
     parser.add_argument(
-        "--steps", type=int, default=500,
-        help="Anzahl Training-Steps"
+        "--steps", type=int, default=0,
+        help="Anzahl Training-Steps (0 = unbegrenzt)"
     )
     parser.add_argument(
         "--display", type=int, default=8,

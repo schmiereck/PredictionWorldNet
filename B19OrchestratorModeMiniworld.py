@@ -17,9 +17,9 @@ import os
 # ─────────────────────────────────────────────
 
 ENV_NAME      = "MiniWorld-OneRoom-v0"
-N_STEPS       = 500
+N_STEPS       = 0           # 0 = unbegrenzt (bis Fenster-X oder Ctrl+C)
 DISPLAY_EVERY = 8
-CHECKPOINT    = "checkpoints/pwn_pretrain_vae_*.pt"  # neuester wird automatisch gewählt
+CHECKPOINT    = "checkpoints/pwn_checkpoint_*.pt"  # neuester wird automatisch gewählt
 
 
 # ─────────────────────────────────────────────

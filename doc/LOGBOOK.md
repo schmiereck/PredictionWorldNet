@@ -366,26 +366,22 @@ Aktuell gibt es keine Save/Load-Funktionalität – alle Gewichte gehen verloren
   Zusätzlich eigenständiges Script `B20PreTrainVAE.py`:
   Sammelt Screenshots aus MiniWorld, trainiert Encoder + Decoder offline.
   Kann wiederholt auf dasselbe Netz angewendet werden (laden → trainieren → speichern).
-  Format: `checkpoints/pwn_<tag>_<timestamp>.pt`
+  Format: `checkpoints/pwn_checkpoint_<timestamp>.pt`
   ```
   # Neu trainieren:
   python B20PreTrainVAE.py --source miniworld --epochs 50
   # Nachtrainieren (ab letztem Checkpoint):
-  python B20PreTrainVAE.py --checkpoint checkpoints/pwn_pretrain_vae_*.pt --epochs 50
-  python B20PreTrainVAE.py --checkpoint checkpoints/pwn_pretrain_vae_*.pt --frames 10000 --epochs 100
+  python B20PreTrainVAE.py --checkpoint checkpoints/pwn_checkpoint_*.pt --epochs 50
+  python B20PreTrainVAE.py --checkpoint checkpoints/pwn_checkpoint_*.pt --frames 10000 --epochs 100
     ```
-Warum ist der Bildvorhersage Fehler immer noch so riesig?
-- **B21** – Pre-Training CLIP/Goal-Embedding (`B21PreTrainCLIP.py`)
-  Trainiert die Goal-Projection (Text → Latent Space) mit gelabelten Bildern.
-  Benötigt vortrainierten VAE-Checkpoint (B20).
-  Labels werden per Farbheuristik automatisch erzeugt:
-    - "red object"   → Bild mit vielen roten Pixeln
-    - "green object" → Bild mit vielen grünen Pixeln
-    - "empty wall"   → Bild ohne markante Farben
-  Contrastive InfoNCE Loss für Text↔Latent Alignment.
+  CLIP Training (Text → Latent) mit Auto-Labels aus MiniWorld (z.B. "roter Ball", "grüner Würfel").
   ```
-  python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_pretrain_vae_*.pt
-  python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_pretrain_vae_*.pt --frames 5000 --epochs 60
+  # Erstmalig (Default-Glob sucht automatisch)
+  python B21PreTrainCLIP.py
+  # Nachtrainieren (gleicher Default-Glob, lädt Encoder + goal_proj)
+  python B21PreTrainCLIP.py --frames 5000 --epochs 100
+  # Expliziter Checkpoint
+  python B21PreTrainCLIP.py --checkpoint checkpoints/pwn_checkpoint_*.pt --frames 5000 --epochs 100
   ```
 
 ####  Implementiert:
@@ -400,8 +396,8 @@ Warum ist der Bildvorhersage Fehler immer noch so riesig?
 ####  Workflow:
 
   python B20PreTrainVAE.py --epochs 50
-  python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_pretrain_vae_*.pt
-  python B19Orchestrator.py --checkpoint checkpoints/pwn_pretrain_clip_*.pt
+  python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_checkpoint__*.pt
+  python B19Orchestrator.py --checkpoint checkpoints/pwn_checkpoint__*.pt
 
 #### Der Ablauf ist:
 
@@ -421,6 +417,49 @@ B20 (Save/Load + Pre-Train VAE) → B21 (Pre-Train CLIP)
                                           ↓
                                   B19 (Live mit vortrainierten Gewichten)
                                   python B19Orchestrator.py --checkpoint checkpoints/pwn_*.pt
+```
+
+## Gruppe 8: Explorationsstrategie (B22 + B23)
+
+### Motivation
+Das NN lernt rein durch Versuch und Irrtum, wie man nach Objekten sucht.
+Es gibt keine Strategie-Vorgabe. Gemini gibt zwar `next_action_hint` zurück,
+aber niemand nutzt diese Hints. Der Agent bewegt sich daher weitgehend zufällig.
+
+### Ansatz
+Zweistufiges System: Gemini generiert einmalig pro Ziel eine Explorationsstrategie
+als Regelsatz. Ein Executor führt die Regeln aus, solange das NN unsicher ist (hohe Sigma).
+Wenn das NN sicher wird, übernimmt es schrittweise (Sigma-basiertes Blending).
+
+### Neue Bausteine
+
+- **B22** – StrategyGenerator (`B22StrategyGenerator.py`)
+  Definiert Strategy/Rule Datenstrukturen.
+  Interface `StrategyGenerator.generate(goal) → Strategy` (ABC, austauschbar).
+  Zwei Implementierungen:
+    - `GeminiStrategyGenerator` – Gemini erzeugt dynamisch Regeln per Prompt
+    - `MockStrategyGenerator` – Fest codierte universelle Such-Strategie
+
+  Bekannte Conditions: no_target, target_left/right/centered, target_close/far,
+  pan_done, stuck, timeout, always.
+  Bekannte Actions: move_forward/backward, turn_left/right, pan_left/right,
+  center_camera, stop, random_turn, scan_panorama.
+
+- **B23** – StrategyExecutor (`B23StrategyExecutor.py`)
+  `ConditionEvaluator`: Farb-basierte Ziel-Erkennung im 16×16 Bild,
+  Position (links/rechts/zentral), Stuck-Erkennung, Timeout-Tracking.
+  `StrategyExecutor`: Regelauswertung nach Priorität, Action-Vektor-Erzeugung,
+  Sigma-basiertes Blending mit NN-Aktionen.
+  ```
+  blend = sigmoid((sigma - threshold) * steepness)
+  final = blend * strategy_action + (1 - blend) * nn_action
+  ```
+
+### Reihenfolge
+```
+B22 (Regeln generieren) → B23 (Regeln ausführen) → B19 (Integration im Loop)
+                                                          ↓
+                                                    Smooth Übergang: Strategie → NN
 ```
 
 ------------------------------------------------------------------------------------------------------------------------
