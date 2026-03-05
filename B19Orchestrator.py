@@ -728,6 +728,7 @@ class Orchestrator:
                         "gemini_interval": m["gemini_interval"][-1] if m["gemini_interval"] else 0,
                     },
                     gemini_event=gemini_event,
+                    latent_z=ml_result.get("latent_z"),
                     scene=self._scene,
                     goal=self.ml_system.current_goal,
                     action_norm=act_arr,

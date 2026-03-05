@@ -825,6 +825,7 @@ class IntegratedSystem:
             "pred_action":pred_action.squeeze(0).detach().numpy(),
             "sigma":      pred_sigma.squeeze(0).detach().numpy(),
             "context_norm": float(context.norm().item()),
+            "latent_z":   z.squeeze(0).detach().numpy(),
             **train_info,
         }
 
