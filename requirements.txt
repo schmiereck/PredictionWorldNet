@@ -1,0 +1,18 @@
+# pip install -r requirements.txt
+
+# MiniWorld:
+gymnasium
+miniworld @ git+https://github.com/maximecb/gym-miniworld.git
+matplotlib
+numpy
+
+# B04+ Neuronales Netz (wird später benötigt):
+torch
+torchvision
+timm
+
+# B05 CLIP Text-Encoder (wird später benötigt):
+git+https://github.com/openai/CLIP.git
+
+# B13 Gemini (wird später benötigt):
+# google-generativeai
