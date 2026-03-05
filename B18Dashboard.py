@@ -510,7 +510,7 @@ class TrainingDashboard:
                       facecolor='#1a1a2e', alpha=0.9)
         )
 
-        plt.pause(0.02)
+        plt.pause(0.001)
 
     def close(self):
         try:
