@@ -237,10 +237,17 @@ class OverheadMapView:
                             int(c[1] * 255) if c[1] <= 1 else int(c[1]),
                             int(c[2] * 255) if c[2] <= 1 else int(c[2]),
                         )
-                    if ent_color == '#ffffff' and hasattr(ent, 'mesh_name'):
-                        mn = ent.mesh_name
+                    if ent_color == '#ffffff' and hasattr(ent, 'mesh'):
+                        # mesh_name nicht immer als Attribut vorhanden,
+                        # deshalb ObjMesh.cache durchsuchen
+                        from miniworld.objmesh import ObjMesh
+                        mesh_key = ''
+                        for k, v in ObjMesh.cache.items():
+                            if v is ent.mesh:
+                                mesh_key = k
+                                break
                         for cname, chex in _mw_colors.items():
-                            if cname in mn:
+                            if cname in mesh_key:
                                 ent_color = chex
                                 break
                 except Exception:
@@ -405,8 +412,8 @@ class OverheadMapView:
                    'gold'     if r > 0.3 else 'tomato')
             self.ax.scatter(
                 gp["pos"][0], gp["pos"][1],
-                marker='D', s=80, color=col,
-                zorder=6, edgecolors='white', linewidths=0.5
+                marker='D', s=40, color=col,
+                zorder=6, edgecolors='none'
             )
             self.ax.annotate(
                 f'{r:.2f}',
@@ -497,7 +504,7 @@ class OverheadMapView:
         if self.gemini_pts:
             legend_handles.append(
                 plt.Line2D([0],[0], marker='D', color='w',
-                           markerfacecolor='gold', markersize=7,
+                           markerfacecolor='gold', markersize=5,
                            label='Gemini-Call')
             )
         self.ax.legend(handles=legend_handles,
