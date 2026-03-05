@@ -6,14 +6,22 @@ miniworld @ git+https://github.com/maximecb/gym-miniworld.git
 matplotlib
 numpy
 
-# B04+ Neuronales Netz (wird später benötigt):
+# B04+ Neuronales Netz:
 torch
 torchvision
 timm
 
-# B05 CLIP Text-Encoder (wird später benötigt):
+# B05 CLIP Text-Encoder:
 git+https://github.com/openai/CLIP.git
 
-# B13 Gemini (wird später benötigt):
+# B13 Gemini:
 # google-generativeai
 google-genai
+
+# B17 Bild-Skalierung (optional, für bessere Qualität):
+Pillow
+
+# B19 MiniWorld braucht OpenGL-Unterstützung unter Windows:
+# (pyglet kommt automatisch mit miniworld)
+# Falls OpenGL-Fehler: pip install pyopengl
+pyopengl
