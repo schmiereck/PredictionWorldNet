@@ -55,8 +55,10 @@ def _load(filename: str, classname: str = None):
     path = os.path.join(here, filename)
     if not os.path.exists(path):
         raise FileNotFoundError(f"Nicht gefunden: {path}")
-    spec   = importlib.util.spec_from_file_location(filename[:-3], path)
+    mod_name = filename[:-3]
+    spec   = importlib.util.spec_from_file_location(mod_name, path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module  # nötig für @dataclass
     spec.loader.exec_module(module)
     return module
 
@@ -186,31 +188,50 @@ class MiniWorldObsSource(_b17.ObservationSource):
             h, w = size
             return img[::img.shape[0]//h, ::img.shape[1]//w, :][:h,:w,:]
 
+    def _render_with_pan(self):
+        """Rendert Bild mit simuliertem Kamera-Pan.
+
+        Dreht agent.dir temporär um den Pan-Winkel, rendert,
+        und setzt die Richtung zurück. So sieht die Kamera zur Seite
+        während der Roboter geradeaus fährt.
+        """
+        agent = self._env.unwrapped.agent
+        original_dir = agent.dir
+        agent.dir = original_dir + self._cam_pan
+        obs = self._env.unwrapped.render_obs()
+        agent.dir = original_dir
+        return obs
+
     def get_observation(self) -> _b17.Observation:
         if not self._available:
             return self._mock.get_observation()
 
         self._frame += 1
-        img_low = self._resize(self._obs, self._low_res)
+        # Kamera-Bild mit Pan-Offset rendern
+        raw = self._render_with_pan()
+        img_low = self._resize(raw, self._low_res)
         return _b17.Observation(
             image=img_low.astype(np.uint8),
             timestamp=time.time(),
             frame_id=self._frame,
             source="miniworld",
-            metadata={"env": self._env_name},
+            metadata={"env": self._env_name,
+                      "cam_pan": self._cam_pan},
         )
 
     def get_high_res(self) -> _b17.Observation:
         if not self._available:
             return self._mock.get_high_res()
 
-        img_high = self._resize(self._obs, self._high_res)
+        raw = self._render_with_pan()
+        img_high = self._resize(raw, self._high_res)
         return _b17.Observation(
             image=img_high.astype(np.uint8),
             timestamp=time.time(),
             frame_id=self._frame,
             source="miniworld_highres",
-            metadata={"env": self._env_name},
+            metadata={"env": self._env_name,
+                      "cam_pan": self._cam_pan},
         )
 
     def apply_action(self, action: _b17.Action):
@@ -220,8 +241,7 @@ class MiniWorldObsSource(_b17.ObservationSource):
             0: turn_left
             1: turn_right
             2: move_forward
-            (3: move_back bei manchen Envs)
-        Wir leiten aus dem kontinuierlichen Aktions-Vektor ab.
+        Kamera-Pan wird intern gespeichert und beim Rendern angewendet.
         """
         if not self._available:
             return
@@ -230,7 +250,11 @@ class MiniWorldObsSource(_b17.ObservationSource):
         lx   = ros2["twist"]["linear"]["x"]
         az   = ros2["twist"]["angular"]["z"]
 
-        # Kontinuierlich → diskret
+        # Kamera-Pan/Tilt aus Aktion übernehmen (rad)
+        self._cam_pan  = float(ros2["camera"]["pan"])
+        self._cam_tilt = float(ros2["camera"]["tilt"])
+
+        # Kontinuierlich → diskret (Bewegung)
         if abs(az) > abs(lx):
             gym_action = 0 if az > 0 else 1   # links / rechts
         elif lx > 0.05:
@@ -239,11 +263,13 @@ class MiniWorldObsSource(_b17.ObservationSource):
             gym_action = 2                     # default: vorwärts
 
         obs, reward, terminated, truncated, info = self._env.step(gym_action)
+        # Nicht self._obs speichern – get_observation rendert mit Pan
         self._obs = obs
 
         if terminated or truncated:
             obs, _ = self._env.reset()
             self._obs = obs
+            self._cam_pan = 0.0    # Pan zurücksetzen bei Reset
 
     @property
     def obs_shape(self):
@@ -398,8 +424,9 @@ class Orchestrator:
         print()
 
         # ── Dashboard (B18) ────────────────────────────
+        hist_len = self.cfg["n_steps"] if self.cfg["n_steps"] > 0 else 5000
         self.dashboard = TrainingDashboard(
-            max_history=self.cfg["n_steps"],
+            max_history=hist_len,
             title=(f"B19 – Live Training  |  "
                    f"Modus: {self.cfg['mode'].upper()}  |  "
                    f"Gemini: {'✓' if self.gemini.mode=='gemini' else 'Mock'}")
@@ -411,7 +438,7 @@ class Orchestrator:
         # ── Overhead Map ───────────────────────────────
         if OverheadMapView is not None:
             self.overhead = OverheadMapView(
-                map_size=30.0, trail_length=self.cfg["n_steps"],
+                map_size=30.0, trail_length=hist_len,
                 title=f"Draufsicht  |  {self.cfg['mode'].upper()}"
             )
             self.overhead.setup()
@@ -526,7 +553,9 @@ class Orchestrator:
                     "reward":      self.ml_system.metrics["r_total"][-1]
                                    if self.ml_system.metrics["r_total"] else 0.0,
                     "sigma":       0.5,  # wird nach ml_result aktualisiert
-                    "cam_pan":     0.0,
+                    "cam_pan":     self.obs_source._cam_pan
+                                   if isinstance(self.obs_source, MiniWorldObsSource)
+                                   else 0.0,
                     "step":        step,
                 }
                 strategy_action = self.strategy_exec.get_action(obs_info)
@@ -553,9 +582,10 @@ class Orchestrator:
                 )
 
             # ── Robot Step ─────────────────────────────
+            action_obj = Action.from_array(act_arr, source="policy")
             if isinstance(self.obs_source, MiniWorldObsSource):
-                action_obj = Action.from_array(act_arr, source="policy")
                 self.obs_source.apply_action(action_obj)
+            self.action_sink.send(action_obj)
 
             next_obs = self.robot.step(act_arr, source="policy")
 
@@ -624,37 +654,47 @@ class Orchestrator:
                     topdown     = None
 
                 m = self.ml_system.metrics
-                self.dashboard.update(
-                    obs=display_obs,
-                    pred=ml_result["pred_obs"],
-                    metrics={
-                        "fe":              m["fe"][-1]      if m["fe"]      else 0,
-                        "recon":           m["recon"][-1]   if m["recon"]   else 0,
-                        "kl":              m["kl"][-1]      if m["kl"]      else 0,
-                        "r_intrinsic":     m["r_intrinsic"][-1] if m["r_intrinsic"] else 0,
-                        "r_gemini":        m["r_gemini"][-1]    if m["r_gemini"]    else 0,
-                        "r_total":         m["r_total"][-1]     if m["r_total"]     else 0,
-                        "goal_progress":   m["goal_progress"][-1] if m["goal_progress"] else 0,
-                        "beta":            self.ml_system.beta,
-                        "lr":              self.ml_system.optimizer.param_groups[0]["lr"],
-                        "gemini_interval": m["gemini_interval"][-1] if m["gemini_interval"] else 0,
-                    },
-                    gemini_event=gemini_event,
-                    scene=self._scene,
-                    goal=self.ml_system.current_goal,
-                    action_norm=act_arr,
-                    sigma=ml_result.get("sigma"),
-                    topdown=topdown,
-                    gemini_hires=self._last_gemini_image,  # persistiert zwischen Display-Updates
-                )
+                try:
+                    self.dashboard.update(
+                        obs=display_obs,
+                        pred=ml_result["pred_obs"],
+                        metrics={
+                            "fe":              m["fe"][-1]      if m["fe"]      else 0,
+                            "recon":           m["recon"][-1]   if m["recon"]   else 0,
+                            "kl":              m["kl"][-1]      if m["kl"]      else 0,
+                            "r_intrinsic":     m["r_intrinsic"][-1] if m["r_intrinsic"] else 0,
+                            "r_gemini":        m["r_gemini"][-1]    if m["r_gemini"]    else 0,
+                            "r_total":         m["r_total"][-1]     if m["r_total"]     else 0,
+                            "goal_progress":   m["goal_progress"][-1] if m["goal_progress"] else 0,
+                            "beta":            self.ml_system.beta,
+                            "lr":              self.ml_system.optimizer.param_groups[0]["lr"],
+                            "gemini_interval": m["gemini_interval"][-1] if m["gemini_interval"] else 0,
+                        },
+                        gemini_event=gemini_event,
+                        scene=self._scene,
+                        goal=self.ml_system.current_goal,
+                        action_norm=act_arr,
+                        sigma=ml_result.get("sigma"),
+                        topdown=topdown,
+                        gemini_hires=self._last_gemini_image,
+                    )
+                except Exception as _e:
+                    import traceback
+                    print(f"  [FEHLER] dashboard.update(): {_e}")
+                    traceback.print_exc()
 
             # ── Overhead Map Update (jeden Step) ────────
             if self.overhead is not None:
-                self.overhead.update(
-                    action_ros2=self.action_sink.last_ros2 or {},
-                    scene=self._scene,
-                    gemini_event=gemini_event,
-                )
+                try:
+                    self.overhead.update(
+                        action_ros2=self.action_sink.last_ros2 or {},
+                        scene=self._scene,
+                        gemini_event=gemini_event,
+                    )
+                except Exception as _e:
+                    import traceback
+                    print(f"  [FEHLER] overhead.update(): {_e}")
+                    traceback.print_exc()
 
             obs = next_obs
             step += 1

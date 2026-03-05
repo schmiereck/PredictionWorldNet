@@ -282,6 +282,13 @@ class OverheadMapView:
         self.step_count += 1
         self.last_scene  = scene
 
+        if self.step_count <= 5 or self.step_count % 50 == 0:
+            has_data = bool(action_ros2.get("twist"))
+            print(f"  [Overhead] update() step={self.step_count}, "
+                  f"id={id(self):#x}, "
+                  f"trail_len={len(self.trail)}, trail_id={id(self.trail):#x}, "
+                  f"pose=({self.pose.x:.1f},{self.pose.y:.1f})")
+
         # ── Dead Reckoning ─────────────────────────────
         twist = action_ros2.get("twist", {})
         arc   = action_ros2.get("arc",   {})
@@ -310,6 +317,9 @@ class OverheadMapView:
         # Trail + Szenen-Visits
         self.trail.append((self.pose.x, self.pose.y, scene))
         self.scene_visits.append((self.pose.x, self.pose.y, scene))
+
+        if self.step_count <= 5 or self.step_count % 50 == 0:
+            print(f"  [Overhead] AFTER append: trail_len={len(self.trail)}")
 
         # Gemini-Event
         if gemini_event is not None:
@@ -343,7 +353,7 @@ class OverheadMapView:
             cy    = (y_min + y_max) / 2
         else:
             size = self.map_size
-            cx, cy = 0.0, 0.0
+            cx, cy = self.pose.x, self.pose.y
 
         self.ax.set_xlim(cx - size/2, cx + size/2)
         self.ax.set_ylim(cy - size/2, cy + size/2)
@@ -410,41 +420,64 @@ class OverheadMapView:
         right_ang = cam_dir - fov_angle/2
         px, py    = self.pose.x, self.pose.y
 
+        # Kamera sitzt vorne am Körper
+        cam_offset = 0.25
+        cam_x = px + cam_offset * np.cos(self.pose.heading)
+        cam_y = py + cam_offset * np.sin(self.pose.heading)
+
         cone = plt.Polygon([
-            [px, py],
-            [px + cone_len*np.cos(left_ang),
-             py + cone_len*np.sin(left_ang)],
-            [px + cone_len*np.cos(right_ang),
-             py + cone_len*np.sin(right_ang)],
+            [cam_x, cam_y],
+            [cam_x + cone_len*np.cos(left_ang),
+             cam_y + cone_len*np.sin(left_ang)],
+            [cam_x + cone_len*np.cos(right_ang),
+             cam_y + cone_len*np.sin(right_ang)],
         ], closed=True, color='cyan', alpha=0.12, zorder=4)
         self.ax.add_patch(cone)
 
         # Kamera-Richtungs-Linie
         self.ax.plot(
-            [px, px + cone_len*0.8*np.cos(cam_dir)],
-            [py, py + cone_len*0.8*np.sin(cam_dir)],
+            [cam_x, cam_x + cone_len*0.8*np.cos(cam_dir)],
+            [cam_y, cam_y + cone_len*0.8*np.sin(cam_dir)],
             color='cyan', linewidth=1.2, alpha=0.7, zorder=5
         )
 
-        # ── Roboter als Pfeil ──────────────────────────
-        arrow_len = 0.35
+        # Kamera-Punkt (vorne am Körper)
+        self.ax.plot(cam_x, cam_y, 'o', color='cyan',
+                     markersize=4, zorder=8)
+
+        # ── Roboter-Körper als Rechteck + Richtungspfeil ──
+        arrow_len = 0.5
         dx = arrow_len * np.cos(self.pose.heading)
         dy = arrow_len * np.sin(self.pose.heading)
         scene_col = SCENE_COLORS.get(scene, '#ffffff')
 
+        # Rechteckiger Körper (gedreht in Fahrtrichtung)
+        body_w2, body_h2 = 0.45, 0.30
+        corners = np.array([
+            [-body_w2/2, -body_h2/2],
+            [ body_w2/2, -body_h2/2],
+            [ body_w2/2,  body_h2/2],
+            [-body_w2/2,  body_h2/2],
+        ])
+        cos_h = np.cos(self.pose.heading)
+        sin_h = np.sin(self.pose.heading)
+        rot = np.array([[cos_h, -sin_h], [sin_h, cos_h]])
+        corners = corners @ rot.T + np.array([px, py])
+        body_rect = plt.Polygon(
+            corners, closed=True,
+            facecolor='#2a3a4a', edgecolor='white',
+            linewidth=1.5, alpha=0.9, zorder=6
+        )
+        self.ax.add_patch(body_rect)
+
+        # Richtungspfeil (Fahrtrichtung)
         self.ax.annotate(
-            "", xy=(px+dx, py+dy), xytext=(px-dx*0.5, py-dy*0.5),
+            "", xy=(px+dx, py+dy), xytext=(px-dx*0.3, py-dy*0.3),
             arrowprops=dict(
-                arrowstyle='->', color=scene_col,
-                lw=2.5, mutation_scale=18
+                arrowstyle='->', color='yellow',
+                lw=2.5, mutation_scale=20
             ), zorder=7
         )
-        # Roboter-Körper
-        robot_circle = plt.Circle(
-            (px, py), 0.18,
-            color=scene_col, alpha=0.85, zorder=6
-        )
-        self.ax.add_patch(robot_circle)
 
         # ── Legende ───────────────────────────────────
         legend_handles = []
