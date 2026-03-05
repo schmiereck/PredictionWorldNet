@@ -88,9 +88,9 @@ class MiniWorldFrameDataset(Dataset):
                 if terminated or truncated:
                     obs, _ = env.reset()
 
-                # Auf 16×16 skalieren
+                # Auf 128×128 skalieren
                 img_pil = PILImage.fromarray(obs).resize(
-                    (16, 16), PILImage.BILINEAR)
+                    (128, 128), PILImage.BILINEAR)
                 self.frames.append(np.array(img_pil, dtype=np.uint8))
 
                 if (i + 1) % 500 == 0:
@@ -115,7 +115,7 @@ class MiniWorldFrameDataset(Dataset):
 
     def __getitem__(self, idx):
         img = self.frames[idx].astype(np.float32) / 255.0
-        return torch.from_numpy(img).permute(2, 0, 1)  # (3, 16, 16)
+        return torch.from_numpy(img).permute(2, 0, 1)  # (3, 128, 128)
 
 
 class MockFrameDataset(Dataset):
@@ -193,7 +193,7 @@ def pretrain_vae(
         beta = min(beta_max, beta_max * epoch / max(1, beta_warmup_epochs))
 
         for batch in loader:
-            # batch shape: (B, 3, 16, 16)
+            # batch shape: (B, 3, 128, 128)
             mu, log_var, z = encoder(batch)
             recon = decoder(z)
 
@@ -308,15 +308,19 @@ def main():
 
     # ── Optional: bestehenden Checkpoint laden ─────────
     if args.checkpoint:
-        print(f"\nLade Checkpoint: {args.checkpoint}")
-        ckpt_path = resolve_checkpoint(args.checkpoint)
-        print(f"  → {ckpt_path}")
-        ckpt = torch.load(ckpt_path, weights_only=False)
-        encoder.load_state_dict(ckpt["encoder"])
-        decoder.load_state_dict(ckpt["decoder"])
-        prev_steps = ckpt.get("total_steps", 0)
-        print(f"  Vorherige Steps: {prev_steps}")
-        print()
+        try:
+            print(f"\nLade Checkpoint: {args.checkpoint}")
+            ckpt_path = resolve_checkpoint(args.checkpoint)
+            print(f"  → {ckpt_path}")
+            ckpt = torch.load(ckpt_path, weights_only=False)
+            encoder.load_state_dict(ckpt["encoder"])
+            decoder.load_state_dict(ckpt["decoder"])
+            prev_steps = ckpt.get("total_steps", 0)
+            print(f"  Vorherige Steps: {prev_steps}")
+            print()
+        except FileNotFoundError:
+            print(f"\nKein Checkpoint gefunden → starte mit frischen Gewichten.")
+            print()
 
     # ── Training ───────────────────────────────────────
     result = pretrain_vae(

@@ -77,7 +77,7 @@ LABEL_DESCRIPTIONS = {
 
 def classify_frame(frame: np.ndarray) -> str:
     """
-    Farb-Heuristik für 16×16 MiniWorld-Frames.
+    Farb-Heuristik für 128×128 MiniWorld-Frames.
     Prüft ob eine Farbe deutlich dominiert.
     """
     if frame.dtype == np.uint8:
@@ -170,7 +170,7 @@ class LabeledFrameDataset(Dataset):
                     obs = env.unwrapped.render_obs()
 
                 img = np.array(
-                    PILImage.fromarray(obs).resize((16, 16), PILImage.BILINEAR),
+                    PILImage.fromarray(obs).resize((128, 128), PILImage.BILINEAR),
                     dtype=np.uint8
                 )
                 self.frames.append(img)
@@ -188,7 +188,7 @@ class LabeledFrameDataset(Dataset):
                     obs, _ = env.reset()
 
                 img = np.array(
-                    PILImage.fromarray(obs).resize((16, 16), PILImage.BILINEAR),
+                    PILImage.fromarray(obs).resize((128, 128), PILImage.BILINEAR),
                     dtype=np.uint8
                 )
                 self.frames.append(img)
@@ -220,7 +220,7 @@ class LabeledFrameDataset(Dataset):
 
     def __getitem__(self, idx):
         img = self.frames[idx].astype(np.float32) / 255.0
-        tensor = torch.from_numpy(img).permute(2, 0, 1)  # (3,16,16)
+        tensor = torch.from_numpy(img).permute(2, 0, 1)  # (3,128,128)
         label = self.labels[idx]
         description = LABEL_DESCRIPTIONS[label]
         return tensor, label, description
@@ -283,7 +283,7 @@ def pretrain_clip(
         n_batches  = 0
 
         for batch_imgs, batch_labels, batch_descs in loader:
-            # batch_imgs: (B, 3, 16, 16)
+            # batch_imgs: (B, 3, 128, 128)
             with torch.no_grad():
                 mu, log_var, z = encoder(batch_imgs)
                 z_norm = F.normalize(z, dim=-1)  # (B, 64)

@@ -86,7 +86,7 @@ ACTION_BOUNDS = {
 }
 LATENT_DIM  = 64
 D_MODEL     = 128
-OBS_SHAPE   = (16, 16, 3)
+OBS_SHAPE   = (128, 128, 3)
 
 SCENE_TYPES = ["red_box", "blue_ball", "green_door", "corridor", "corner"]
 SCENE_GOALS = {
@@ -110,6 +110,7 @@ SCENE_ACTIONS = {
 # ─────────────────────────────────────────────
 
 def draw_scene(scene_type: str, noise: float = 0.0) -> np.ndarray:
+    # Basis bei 16x16 zeichnen, dann auf OBS_SHAPE hochskalieren
     img = np.zeros((16, 16, 3), dtype=np.uint8)
     for y in range(10, 16):
         img[y, :] = [int(60+(y-10)*15)]*3
@@ -141,6 +142,11 @@ def draw_scene(scene_type: str, noise: float = 0.0) -> np.ndarray:
         img = np.clip(img.astype(int) +
                       (np.random.randn(*img.shape)*noise*255).astype(int),
                       0, 255).astype(np.uint8)
+    # Auf OBS_SHAPE skalieren
+    target_h, target_w = OBS_SHAPE[0], OBS_SHAPE[1]
+    if (target_h, target_w) != (16, 16):
+        img = np.repeat(np.repeat(img, target_h // 16, axis=0),
+                        target_w // 16, axis=1)
     return img
 
 
@@ -155,9 +161,12 @@ class Encoder(nn.Module):
             nn.Conv2d(3,32,3,stride=2,padding=1), nn.BatchNorm2d(32), nn.ReLU(True),
             nn.Conv2d(32,64,3,stride=2,padding=1), nn.BatchNorm2d(64), nn.ReLU(True),
             nn.Conv2d(64,128,3,stride=2,padding=1), nn.BatchNorm2d(128), nn.ReLU(True),
+            nn.Conv2d(128,128,3,stride=2,padding=1), nn.BatchNorm2d(128), nn.ReLU(True),
+            nn.Conv2d(128,128,3,stride=2,padding=1), nn.BatchNorm2d(128), nn.ReLU(True),
         )
-        self.fc_mu      = nn.Linear(512, latent_dim)
-        self.fc_log_var = nn.Linear(512, latent_dim)
+        # 128x128 → 64→32→16→8→4  ⇒  flatten = 128*4*4 = 2048
+        self.fc_mu      = nn.Linear(2048, latent_dim)
+        self.fc_log_var = nn.Linear(2048, latent_dim)
 
     def forward(self, x):
         f       = self.conv(x).reshape(x.size(0), -1)
@@ -171,8 +180,13 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, latent_dim=LATENT_DIM):
         super().__init__()
-        self.fc = nn.Sequential(nn.Linear(latent_dim, 512), nn.ReLU(True))
+        # 2048 = 128*4*4, reshape zu (128,4,4), deconv → 128x128
+        self.fc = nn.Sequential(nn.Linear(latent_dim, 2048), nn.ReLU(True))
         self.deconv = nn.Sequential(
+            nn.ConvTranspose2d(128,128,3,stride=2,padding=1,output_padding=1),
+            nn.BatchNorm2d(128), nn.ReLU(True),
+            nn.ConvTranspose2d(128,128,3,stride=2,padding=1,output_padding=1),
+            nn.BatchNorm2d(128), nn.ReLU(True),
             nn.ConvTranspose2d(128,64,3,stride=2,padding=1,output_padding=1),
             nn.BatchNorm2d(64), nn.ReLU(True),
             nn.ConvTranspose2d(64,32,3,stride=2,padding=1,output_padding=1),
@@ -181,7 +195,7 @@ class Decoder(nn.Module):
             nn.Sigmoid(),
         )
     def forward(self, z):
-        return self.deconv(self.fc(z).reshape(z.size(0),128,2,2))
+        return self.deconv(self.fc(z).reshape(z.size(0),128,4,4))
 
 
 class TemporalTransformer(nn.Module):
@@ -521,8 +535,8 @@ class IntegratedSystem:
         self.replay = ReplayBuffer(max_size=config["buffer_size"])
 
         # Temporal History (vereinfacht, kein Ring-Buffer nötig für Demo)
-        self.z_hist = deque(maxlen=5)
-        self.a_hist = deque(maxlen=5)
+        self.z_hist = deque(maxlen=4)
+        self.a_hist = deque(maxlen=4)
 
         # Adaptive Controller
         self.adaptive = AdaptiveController(

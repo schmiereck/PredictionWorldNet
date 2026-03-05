@@ -255,8 +255,8 @@ class MockObsSource(ObservationSource):
     SCENE_TYPES = ["red_box", "blue_ball", "green_door", "corridor", "corner"]
 
     def __init__(self, scene_switch_steps: int = 30,
-                 low_res: Tuple = (16, 16),
-                 high_res: Tuple = (128, 128)):
+                 low_res: Tuple = (128, 128),
+                 high_res: Tuple = (256, 256)):
         self._step            = 0
         self._scene_idx       = 0
         self._scene_switch    = scene_switch_steps

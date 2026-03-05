@@ -141,7 +141,7 @@ class MiniWorldObsSource(_b17.ObservationSource):
     """
 
     def __init__(self, env_name: str = "MiniWorld-OneRoom-v0",
-                 low_res=(16,16), high_res=(128,128),
+                 low_res=(128,128), high_res=(256,256),
                  render_mode: str = "rgb_array"):
         self._env_name  = env_name
         self._low_res   = low_res
@@ -150,6 +150,8 @@ class MiniWorldObsSource(_b17.ObservationSource):
         self._obs       = None
         self._frame     = 0
         self._available = False
+        self._cam_pan   = 0.0    # Kamera-Pan in rad (-1.57 .. +1.57)
+        self._cam_tilt  = 0.0    # Kamera-Tilt (für spätere Nutzung)
 
         try:
             import gymnasium as gym
@@ -333,7 +335,7 @@ class Orchestrator:
         if mode == "miniworld":
             self.obs_source = MiniWorldObsSource(
                 env_name=self.cfg["miniworld_env"],
-                low_res=(16,16), high_res=(128,128),
+                low_res=(128,128), high_res=(256,256),
             )
             if not self.obs_source.is_miniworld:
                 print("  → Fallback auf Mock")
@@ -343,7 +345,7 @@ class Orchestrator:
         else:
             self.obs_source = MockObsSource(
                 scene_switch_steps=self.cfg["scene_switch"],
-                low_res=(16,16), high_res=(128,128),
+                low_res=(128,128), high_res=(256,256),
             )
             print(f"  MockObsSource  ✓")
         print()
@@ -520,7 +522,7 @@ class Orchestrator:
             if mode == "miniworld" and self.strategy_exec is not None:
                 # Strategie-Aktion berechnen
                 obs_info = {
-                    "image_16x16": obs.image,
+                    "image_nn": obs.image,
                     "reward":      self.ml_system.metrics["r_total"][-1]
                                    if self.ml_system.metrics["r_total"] else 0.0,
                     "sigma":       0.5,  # wird nach ml_result aktualisiert
@@ -566,7 +568,7 @@ class Orchestrator:
             )
 
             # ── High-res für Gemini ─────────────────────
-            # WICHTIG: Original-Auflösung senden, nicht 16×16 upscaled
+            # WICHTIG: Original-Auflösung senden, nicht NN-Auflösung upscaled
             gemini_image = None
             if ml_result.get("gem_called"):
                 if isinstance(self.obs_source, MiniWorldObsSource) \
@@ -596,15 +598,15 @@ class Orchestrator:
                 gemini_event = None
 
             # ── Live-Update: Kamera-Bilder jeden Step ──────
-            # Niedrig aufgelöstes Bild (16×16) – das was das NN sieht
-            live_obs = obs.image  # bereits 16×16 vom ML-System
+            # NN-Auflösung (128×128) – das was das NN sieht
+            live_obs = obs.image  # bereits 128×128 vom ML-System
             self.dashboard.update_live(live_obs, ml_result["pred_obs"])
 
             # ── Dashboard Update (B18) – volle Metriken ────
             if (step % self.cfg["update_display"] == 0 or
                     step == n-1):
 
-                # Original-Auflösung für Dashboard (nicht 16×16)
+                # Original-Auflösung für Dashboard
                 if isinstance(self.obs_source, MiniWorldObsSource) \
                         and self.obs_source.is_miniworld:
                     display_obs = self.obs_source._obs   # 60×80 Original

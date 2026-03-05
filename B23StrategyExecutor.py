@@ -60,13 +60,13 @@ class ConditionEvaluator:
         Wertet alle bekannten Conditions aus.
 
         obs_info Keys:
-            image_16x16: np.ndarray (16,16,3) uint8
+            image_nn: np.ndarray (128,128,3) uint8
             reward: float (letzter Gemini-Reward)
             sigma: float (NN-Unsicherheit)
             cam_pan: float (-1..1, aktuelle Kamera-Position)
             step: int
         """
-        img = obs_info.get("image_16x16")
+        img = obs_info.get("image_nn")
         reward = obs_info.get("reward", 0.0)
         cam_pan = obs_info.get("cam_pan", 0.0)
 
@@ -365,7 +365,7 @@ if __name__ == "__main__":
             img[:, :5, 2] = 30
 
         obs_info = {
-            "image_16x16": img,
+            "image_nn": img,
             "reward": 0.1 if i < 10 else 0.5,
             "sigma": 0.6 if i < 15 else 0.2,
             "cam_pan": 0.0,
