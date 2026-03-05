@@ -5,7 +5,7 @@ https://gemini.google.com/app/3ae43bb93e03dfd2?hl=de
 
 https://claude.ai/chat/14ccbe00-2c17-4745-aa19-e28a6c55a41f
 
-=======================================================================
+------------------------------------------------------------------------------------------------------------------------
 This physics idea might be the next generation of machine learning
 https://www.youtube.com/watch?v=MqDdYybN8o0&t=1087s
 
@@ -36,7 +36,7 @@ Ultimately, integrating these structured mechanics with large language models of
 16:12 - Concrete Mental Image of Active Inference Framework
 17:13 - Takeaway: Intelligence means self-evidencing
 
-=======================================================================
+------------------------------------------------------------------------------------------------------------------------
 Gemini Robotics ER (Embodied Reasoning)
 https://gemini.google.com/app/16c2662d8138cc5f?hl=de
 
@@ -49,7 +49,7 @@ https://gemini.google.com/app/83b43a6c1132c5df?hl=de
 Prediction net
 https://gemini.google.com/app/0e2995dfc0facc99?hl=de
 
-=======================================================================
+------------------------------------------------------------------------------------------------------------------------
 Ich brauche eine einfache 3D-Welt-Simulation die Bilder generieren kann,
 die ich für das Training von Neuronalen-Netzen verwende.
 
@@ -62,8 +62,8 @@ Die generierten Bilder haben eine geringe Auflösung (z.B. 16 x 16 Pixel), es m�
 
 Gibt es hierfür eine vorhandene Bibliothek, die ich verwenden kann?
 
-=======================================================================
-Schaue Dir "RenderDemo2.py" an.
+------------------------------------------------------------------------------------------------------------------------
+Schaue Dir "B00RenderDemo.py" an.
 Auf dieser Grundlage will ich eine Anwendung erstellen, die ein (oder mehrere) neuronale(s) Netz(e) trainiert. 
 Die Architektur soll ein Vorhersage-Netz enthalten, welches ständig trainiert wird.
 Das Vorhersage-Netz soll die nächsten Bilder vorhersagen, die der Roboter sehen wird, abhängig von den Aktionen, die er ausführt.
@@ -270,15 +270,15 @@ Latent State = Deterministic Teil (GRU) + Stochastischer Teil (VAE)
 
 Womit möchtest du anfangen – dem World Model, dem Training Loop, oder der Gemini-Integration?
 
-=======================================================================
-Trainings-Architektur:
+------------------------------------------------------------------------------------------------------------------------
+# Trainings-Architektur:
 Genau, so stelle ich mir das vor Gemini für semantische Richtung, Prediction Error für Exploration.
 
 Da die Gemini Anfragen eine große Latzenz haben (10 bis 15 s) und Kosten verursacht, wäre es sinnvoll, wenn dieses Feedback nur in größeren Abständen hinzugezogen wird. Vielleicht am Anfang häufiger und wenn die Errors keiner werden seltener.
 Mein Vorgehen wäre, für jeden Teilschritt eine kleine Demo Anwenung zu erstellen, um die technische Anbindung zu testen. Aus den Bausteinen bauen wir dann die komplette Anwendung.
 Erstelle als erstes eine Liste der Bausteine die wir abarbeiten wollen.
 
------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------
 # Bausteine – Implementierungsplan
 
 ## Gruppe 1: Umgebung & Daten
@@ -323,8 +323,4 @@ B01 → B02 → B03 → B04 → B08 → B10 → B11 → B16
                               B13 → B14 → B15 → B18
 ```
 
----
-
-Sollen wir mit **B02 – Replay Buffer** anfangen?
-
-=======================================================================
+------------------------------------------------------------------------------------------------------------------------
