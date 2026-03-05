@@ -1,13 +1,27 @@
 """
-B03 – Nicht-linearer Zeitstempel-Buffer Demo
-=============================================
-Speichert Frames bei nicht-linearen Zeitabständen in der Vergangenheit.
+B03 – Nicht-linearer Zeitstempel-Buffer Demo (v2)
+==================================================
+Speichert (Frame, Aktion)-Paare bei nicht-linearen Zeitabständen.
 Zeitskala: t=1, 2, 4, 8, 16 Schritte zurück (logarithmisch).
 
-Idee: Kurze Vergangenheit = hohe Auflösung (jeder Schritt)
-      Lange Vergangenheit = niedrige Auflösung (nur Snapshots)
+v2-Änderung: Jeder Slot speichert jetzt zusätzlich die Aktion,
+die zum jeweiligen Frame geführt hat:
 
-Wird später als Input für den Temporal Transformer (B07) verwendet.
+    Slot t-8: (Frame_t-8, Action_t-8)
+               ↑ was der Agent sah    ↑ was er dann tat
+
+Warum nur eine Aktion pro Slot (nicht alle Zwischenaktionen)?
+    - Kompakt: festes Format für den Transformer
+    - Ausreichend: Das World Model lernt implizit die Dynamik
+    - Konsistent mit DreamerV3 / RSSM Architektur
+
+get_temporal_frames() gibt zurück:
+    "frames"  : (n_slots, H, W, C)
+    "actions" : (n_slots, action_dim)   ← neu
+    "times"   : [1, 2, 4, 8, 16]
+    "valid"   : [True, True, ...]
+
+Wird als Input für den Temporal Transformer (B07) verwendet.
 """
 
 import matplotlib
@@ -25,86 +39,96 @@ from collections import deque
 
 class TemporalBuffer:
     """
-    Hält einen vollständigen Ringpuffer aller letzten Frames
+    Hält einen vollständigen Ringpuffer aller letzten (Frame, Aktion)-Paare
     und gibt auf Anfrage Snapshots bei nicht-linearen Zeitabständen zurück.
 
     Zeitskala (Schritte in die Vergangenheit):
         [1, 2, 4, 8, 16]  →  logarithmische Abstände
 
     Aufbau:
-        _ring  : Ringpuffer der letzten `max_lag` Frames (vollständig)
-        get()  : Gibt die Frames bei den definierten Zeitabständen zurück
+        _ring  : Ringpuffer der letzten `max_lag` (Frame, Aktion)-Paare
+        get()  : Gibt die Paare bei den definierten Zeitabständen zurück
 
     Vorteil gegenüber festem Abstand:
         - Kurze Vergangenheit: feingranular  (für schnelle Reaktionen)
         - Lange Vergangenheit: grob          (für langfristige Planung)
     """
 
-    # Zeitabstände in Schritten (konfigurierbar)
     TIME_STEPS = [1, 2, 4, 8, 16]
 
-    def __init__(self, obs_shape: tuple, time_steps: list = None):
+    def __init__(self, obs_shape: tuple, action_dim: int = 3,
+                 time_steps: list = None):
         self.obs_shape  = obs_shape
+        self.action_dim = action_dim
         self.time_steps = time_steps or self.TIME_STEPS
-        self.max_lag    = max(self.time_steps)  # Größter benötigter Rückblick
+        self.max_lag    = max(self.time_steps)
         self.n_slots    = len(self.time_steps)
 
-        # Ringpuffer: speichert die letzten `max_lag + 1` Frames
-        # Initialisiert mit schwarzen Bildern (Null-Frames)
-        self._ring      = deque(
-            [np.zeros(obs_shape, dtype=np.uint8)] * (self.max_lag + 1),
+        # Null-Werte für Initialisierung
+        null_frame  = np.zeros(obs_shape, dtype=np.uint8)
+        null_action = np.zeros(action_dim, dtype=np.float32)
+
+        # Ringpuffer speichert (frame, action)-Tupel
+        self._ring = deque(
+            [(null_frame.copy(), null_action.copy())] * (self.max_lag + 1),
             maxlen=self.max_lag + 1
         )
         self.step_count = 0
 
-    def add(self, obs: np.ndarray):
-        """Neuen Frame in den Ringpuffer schreiben."""
-        self._ring.append(obs.copy())
+    def add(self, obs: np.ndarray, action: np.ndarray):
+        """
+        Neues (Frame, Aktion)-Paar in den Ringpuffer schreiben.
+
+        Args:
+            obs    : (H, W, C) uint8  – aktuelle Beobachtung
+            action : (action_dim,) float32  – Aktion die zu diesem Frame geführt hat
+                     Format: [linear_x, angular_z, duration] normalisiert auf [-1, 1]
+        """
+        self._ring.append((obs.copy(), np.array(action, dtype=np.float32)))
         self.step_count += 1
 
     def get_temporal_frames(self) -> dict:
         """
-        Gibt Frames bei den definierten Zeitabständen zurück.
+        Gibt (Frame, Aktion)-Paare bei den definierten Zeitabständen zurück.
 
         Returns:
             dict mit:
-              "frames"      : Array (n_slots, H, W, C) – die historischen Frames
-              "time_steps"  : Liste der Zeitabstände
-              "ages"        : Tatsächliches Alter in Schritten (= min(t, step_count))
-              "valid"       : Bool-Array – False wenn noch kein echter Frame vorhanden
+              "frames"  : (n_slots, H, W, C)       – historische Frames
+              "actions" : (n_slots, action_dim)     – zugehörige Aktionen  ← neu
+              "times"   : Liste der Zeitabstände
+              "valid"   : Bool-Array
         """
-        ring_list = list(self._ring)   # Index 0 = ältester, -1 = aktuellster
+        ring_list = list(self._ring)
         n         = len(ring_list)
 
-        frames = []
-        ages   = []
-        valid  = []
+        frames  = []
+        actions = []
+        valid   = []
 
         for t in self.time_steps:
-            idx = n - 1 - t            # Position im Ringpuffer
+            idx = n - 1 - t
             if idx >= 0:
-                frames.append(ring_list[idx])
-                ages.append(t)
+                frame, action = ring_list[idx]
+                frames.append(frame)
+                actions.append(action)
                 valid.append(self.step_count >= t)
             else:
-                # Noch nicht genug Frames → Null-Frame
                 frames.append(np.zeros(self.obs_shape, dtype=np.uint8))
-                ages.append(t)
+                actions.append(np.zeros(self.action_dim, dtype=np.float32))
                 valid.append(False)
 
         return {
-            "frames":     np.stack(frames),          # (n_slots, H, W, C)
-            "time_steps": self.time_steps,
-            "ages":       ages,
-            "valid":      valid,
+            "frames":  np.stack(frames),    # (n_slots, H, W, C)
+            "actions": np.stack(actions),   # (n_slots, action_dim)
+            "times":   self.time_steps,
+            "valid":   valid,
         }
 
-    def get_current(self) -> np.ndarray:
-        """Gibt den aktuellsten Frame zurück."""
+    def get_current(self) -> tuple:
+        """Gibt (Frame, Aktion) des aktuellsten Slots zurück."""
         return list(self._ring)[-1]
 
     def is_ready(self) -> bool:
-        """True wenn alle Zeitslots mit echten Frames befüllt sind."""
         return self.step_count >= self.max_lag
 
     @property
@@ -113,12 +137,13 @@ class TemporalBuffer:
 
     def stats(self) -> dict:
         return {
-            "step_count":   self.step_count,
-            "max_lag":      self.max_lag,
-            "n_slots":      self.n_slots,
-            "time_steps":   self.time_steps,
-            "is_ready":     self.is_ready(),
-            "fill_%":       f"{self.fill_ratio * 100:.1f}%",
+            "step_count": self.step_count,
+            "max_lag":    self.max_lag,
+            "n_slots":    self.n_slots,
+            "action_dim": self.action_dim,
+            "time_steps": self.time_steps,
+            "is_ready":   self.is_ready(),
+            "fill_%":     f"{self.fill_ratio * 100:.1f}%",
         }
 
 
@@ -128,32 +153,43 @@ class TemporalBuffer:
 
 class MockEnv:
     """
-    Erzeugt Frames mit sichtbarem Zeitfortschritt:
-    - Hintergrundfarbe wechselt graduell (simuliert Bewegung)
-    - Weißer Zähler-Balken am unteren Rand (visueller Fortschritt)
+    Erzeugt Frames mit sichtbarem Zeitfortschritt und zufällige ROS2-Aktionen.
     """
-    OBS_SHAPE = (16, 16, 3)
+    OBS_SHAPE  = (16, 16, 3)
+    ACTION_DIM = 3   # [linear_x, angular_z, duration] normalisiert [-1, 1]
+
+    # Benannte Aktionen für die Visualisierung
+    ACTION_NAMES = ["vorwaerts", "links", "rechts", "kurve_l", "kurve_r", "stopp"]
+    ACTION_VECTORS = [
+        [ 0.6,  0.0, -0.6],   # vorwaerts
+        [ 0.0,  0.8, -0.6],   # links
+        [ 0.0, -0.8, -0.6],   # rechts
+        [ 0.4,  0.4, -0.3],   # kurve_links
+        [ 0.4, -0.4, -0.3],   # kurve_rechts
+        [ 0.0,  0.0, -1.0],   # stopp
+    ]
 
     def __init__(self):
-        self.step_count = 0
+        self.step_count  = 0
+        self.last_action = np.zeros(self.ACTION_DIM, dtype=np.float32)
+        self.last_action_name = "stopp"
 
-    def step(self) -> np.ndarray:
+    def step(self):
         self.step_count += 1
-        return self._make_frame(self.step_count)
+        # Zufällige Aktion aus den benannten Aktionen
+        idx = np.random.randint(len(self.ACTION_NAMES))
+        self.last_action = np.array(self.ACTION_VECTORS[idx], dtype=np.float32)
+        self.last_action_name = self.ACTION_NAMES[idx]
+        return self._make_frame(self.step_count), self.last_action
 
     def _make_frame(self, t: int) -> np.ndarray:
         frame = np.zeros(self.OBS_SHAPE, dtype=np.uint8)
-
-        # Hintergrund: Farbverlauf über Zeit (R-Kanal steigt, B-Kanal fällt)
         r = int((np.sin(t * 0.15) * 0.5 + 0.5) * 200)
         g = int((np.sin(t * 0.07 + 1) * 0.5 + 0.5) * 200)
         b = int((np.cos(t * 0.10) * 0.5 + 0.5) * 200)
         frame[:, :] = [r, g, b]
-
-        # Weißer Fortschritts-Balken unten (zeigt Zeitschritt visuell)
         bar_width = (t % 16) + 1
         frame[14:16, :bar_width] = [255, 255, 255]
-
         return frame
 
 
@@ -162,48 +198,48 @@ class MockEnv:
 # ─────────────────────────────────────────────
 
 def run_demo():
-    N_STEPS     = 120
-    TIME_STEPS  = [1, 2, 4, 8, 16]
-    OBS_SHAPE   = MockEnv.OBS_SHAPE
+    N_STEPS    = 120
+    TIME_STEPS = [1, 2, 4, 8, 16]
+    OBS_SHAPE  = MockEnv.OBS_SHAPE
+    ACTION_DIM = MockEnv.ACTION_DIM
 
-    env     = MockEnv()
-    tbuf    = TemporalBuffer(obs_shape=OBS_SHAPE, time_steps=TIME_STEPS)
+    env  = MockEnv()
+    tbuf = TemporalBuffer(obs_shape=OBS_SHAPE, action_dim=ACTION_DIM,
+                          time_steps=TIME_STEPS)
 
     # ── Matplotlib Setup ──────────────────────────────────
     n_slots = len(TIME_STEPS)
 
-    fig = plt.figure(figsize=(15, 8))
-    fig.suptitle('B03 – Nicht-linearer Zeitstempel-Buffer', fontsize=14, fontweight='bold')
-    gs  = gridspec.GridSpec(3, n_slots + 1, figure=fig, hspace=0.55, wspace=0.35)
+    fig = plt.figure(figsize=(15, 9))
+    fig.suptitle('B03 v2 – Temporal Buffer mit (Frame, Aktion)-Paaren',
+                 fontsize=13, fontweight='bold')
+    gs = gridspec.GridSpec(3, n_slots + 1, figure=fig, hspace=0.6, wspace=0.35)
 
-    # Zeile 0: aktuelles Bild + Füllstand
-    ax_current  = fig.add_subplot(gs[0, 0])
-    ax_fill     = fig.add_subplot(gs[0, 1:])
-
-    # Zeile 1: die 5 historischen Frames
-    ax_frames   = [fig.add_subplot(gs[1, i]) for i in range(n_slots)]
-    ax_frames.append(fig.add_subplot(gs[1, n_slots]))  # Platzhalter
-
-    # Zeile 2: Zeitachsen-Diagramm + Statistiken
-    ax_timeline = fig.add_subplot(gs[2, :n_slots])
-    ax_stats    = fig.add_subplot(gs[2, n_slots])
+    ax_current = fig.add_subplot(gs[0, 0])
+    ax_fill    = fig.add_subplot(gs[0, 1:])
+    ax_frames  = [fig.add_subplot(gs[1, i]) for i in range(n_slots)]
+    ax_frames.append(fig.add_subplot(gs[1, n_slots]))
+    ax_actions = fig.add_subplot(gs[2, :n_slots])   # Aktions-Heatmap  ← neu
+    ax_stats   = fig.add_subplot(gs[2, n_slots])
     ax_stats.axis('off')
 
-    # Tracking
-    fill_history    = []
-    valid_history   = [[] for _ in TIME_STEPS]
+    fill_history  = []
+    valid_history = [[] for _ in TIME_STEPS]
+
+    # Aktions-Dimensionsnamen für Achsenbeschriftung
+    action_dim_names = ["lin_x", "ang_z", "dur"]
 
     print(f"Starte Demo: {N_STEPS} Schritte")
-    print(f"Zeitabstände: {TIME_STEPS} Schritte")
+    print(f"Zeitabstaende: {TIME_STEPS} Schritte")
+    print(f"Action-Dim: {ACTION_DIM} [linear_x, angular_z, duration]")
     print(f"Buffer bereit ab Schritt: {max(TIME_STEPS)}\n")
 
     for step in range(N_STEPS):
-        obs = env.step()
-        tbuf.add(obs)
+        obs, action = env.step()
+        tbuf.add(obs, action)
 
         temporal = tbuf.get_temporal_frames()
 
-        # Tracking
         fill_history.append(tbuf.fill_ratio * 100)
         for i, v in enumerate(temporal["valid"]):
             valid_history[i].append(float(v))
@@ -214,7 +250,10 @@ def run_demo():
             # ── Aktuelles Bild ─────────────────────────
             ax_current.clear()
             ax_current.imshow(obs, interpolation='nearest')
-            ax_current.set_title(f'Aktuell\nStep {step + 1}', fontsize=8)
+            ax_current.set_title(
+                f'Aktuell\nStep {step + 1}\n{env.last_action_name}',
+                fontsize=7
+            )
             ax_current.axis('off')
 
             # ── Füllstand ──────────────────────────────
@@ -227,44 +266,50 @@ def run_demo():
             ax_fill.legend(fontsize=7)
 
             # ── Historische Frames ──────────────────────
-            for i, (t, frame, is_valid) in enumerate(zip(
-                    temporal["time_steps"],
+            for i, (t, frame, act, is_valid) in enumerate(zip(
+                    temporal["times"],
                     temporal["frames"],
+                    temporal["actions"],
                     temporal["valid"]
             )):
                 ax_frames[i].clear()
                 ax_frames[i].imshow(frame, interpolation='nearest')
                 status = "OK" if is_valid else "--"
-                ax_frames[i].set_title(f't-{t} {status}', fontsize=8)
+                # Aktion als kompakten Text anzeigen
+                act_str = f"lx={act[0]:+.1f}\naz={act[1]:+.1f}"
+                ax_frames[i].set_title(f't-{t} {status}\n{act_str}', fontsize=6)
                 ax_frames[i].axis('off')
-
-                # Roter Rahmen wenn noch kein gültiger Frame
                 for spine in ax_frames[i].spines.values():
                     spine.set_edgecolor('green' if is_valid else 'red')
                     spine.set_linewidth(2)
 
             ax_frames[n_slots].axis('off')
 
-            # ── Zeitachsen-Diagramm ─────────────────────
-            ax_timeline.clear()
-            colors = plt.cm.plasma(np.linspace(0.1, 0.9, n_slots))
-
-            for i, (t, color) in enumerate(zip(TIME_STEPS, colors)):
-                if len(valid_history[i]) > 0:
-                    ax_timeline.plot(
-                        steps_x, valid_history[i],
-                        color=color, linewidth=1.5,
-                        label=f't-{t}', alpha=0.8
+            # ── Aktions-Heatmap  ← neu ─────────────────
+            ax_actions.clear()
+            act_matrix = temporal["actions"]   # (n_slots, action_dim)
+            im = ax_actions.imshow(
+                act_matrix.T, cmap='coolwarm', aspect='auto',
+                vmin=-1, vmax=1, interpolation='nearest'
+            )
+            ax_actions.set_xticks(range(n_slots))
+            ax_actions.set_xticklabels(
+                [f't-{t}' for t in temporal["times"]], fontsize=8
+            )
+            ax_actions.set_yticks(range(ACTION_DIM))
+            ax_actions.set_yticklabels(action_dim_names, fontsize=8)
+            ax_actions.set_title(
+                'Aktions-Heatmap pro Slot  [blau=negativ, rot=positiv]',
+                fontsize=9
+            )
+            # Werte in Zellen
+            for r in range(ACTION_DIM):
+                for c in range(n_slots):
+                    ax_actions.text(
+                        c, r, f"{act_matrix[c, r]:+.2f}",
+                        ha='center', va='center', fontsize=7,
+                        color='white' if abs(act_matrix[c, r]) > 0.5 else 'black'
                     )
-
-            # Markierungen wo jeder Slot "aufgeht"
-            for t in TIME_STEPS:
-                ax_timeline.axvline(t - 1, color='gray', linestyle=':', linewidth=1, alpha=0.5)
-
-            ax_timeline.set_title('Slot-Verfügbarkeit über Zeit (0=leer, 1=gültig)')
-            ax_timeline.set_xlabel('Schritt')
-            ax_timeline.set_ylim(-0.1, 1.2)
-            ax_timeline.legend(fontsize=7, loc='lower right', ncol=n_slots)
 
             # ── Statistiken ────────────────────────────
             ax_stats.clear()
@@ -272,20 +317,25 @@ def run_demo():
             stats = tbuf.stats()
             valid_flags = temporal["valid"]
             lines = [
-                "── Temporal Buffer ──",
+                "── Temporal Buffer v2 ──",
                 f"Schritt:    {stats['step_count']}",
-                f"Füllstand:  {stats['fill_%']}",
+                f"Fuellstand: {stats['fill_%']}",
                 f"Bereit:     {'JA' if stats['is_ready'] else 'NEIN'}",
+                f"Action-Dim: {stats['action_dim']}",
                 "",
-                "── Slots ────────────",
+                "── Slots ───────────────",
             ]
-            for t, v in zip(TIME_STEPS, valid_flags):
-                lines.append(f"  t-{t:>2}:  {'OK  gueltig' if v else '--  warte  '}")
+            for t, v, act in zip(TIME_STEPS, valid_flags, temporal["actions"]):
+                status = "OK" if v else "--"
+                lines.append(
+                    f"  t-{t:>2}: {status} "
+                    f"lx={act[0]:+.2f} az={act[1]:+.2f}"
+                )
 
             ax_stats.text(
-                0.05, 0.95, "\n".join(lines),
+                0.02, 0.98, "\n".join(lines),
                 transform=ax_stats.transAxes,
-                fontsize=8, verticalalignment='top',
+                fontsize=7, verticalalignment='top',
                 fontfamily='monospace',
                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8)
             )
@@ -295,22 +345,45 @@ def run_demo():
     print("\nDemo abgeschlossen!")
     print("Finale Statistiken:")
     for k, v in tbuf.stats().items():
-        print(f"  {k:15s}: {v}")
+        print(f"  {k:12s}: {v}")
 
-    # ── Finales Bild: Zeitachsen-Vergleich ─────────────
-    fig2, axes2 = plt.subplots(1, n_slots + 1, figsize=(14, 3))
-    fig2.suptitle(f'Finaler Snapshot – Step {N_STEPS}: Aktuell vs. historische Frames', fontsize=12)
-
-    current = tbuf.get_current()
-    axes2[0].imshow(current, interpolation='nearest')
-    axes2[0].set_title('Aktuell (t=0)', fontsize=9)
-    axes2[0].axis('off')
-
+    # ── Finales Bild: Snapshot ──────────────────────────
     temporal = tbuf.get_temporal_frames()
-    for i, (t, frame) in enumerate(zip(temporal["time_steps"], temporal["frames"])):
-        axes2[i + 1].imshow(frame, interpolation='nearest')
-        axes2[i + 1].set_title(f't-{t} Schritte\nvor Step {N_STEPS}', fontsize=9)
-        axes2[i + 1].axis('off')
+    current_frame, current_action = tbuf.get_current()
+
+    fig2, axes2 = plt.subplots(2, n_slots + 1, figsize=(14, 5))
+    fig2.suptitle(
+        f'Finaler Snapshot – Step {N_STEPS}: Frames + Aktionen',
+        fontsize=12
+    )
+
+    # Zeile 0: Frames
+    axes2[0, 0].imshow(current_frame, interpolation='nearest')
+    axes2[0, 0].set_title('Aktuell\n(t=0)', fontsize=8)
+    axes2[0, 0].axis('off')
+
+    for i, (t, frame, act) in enumerate(zip(
+            temporal["times"], temporal["frames"], temporal["actions"]
+    )):
+        axes2[0, i+1].imshow(frame, interpolation='nearest')
+        axes2[0, i+1].set_title(f't-{t}', fontsize=8)
+        axes2[0, i+1].axis('off')
+
+        # Zeile 1: Aktions-Balkendiagramm
+        colors = ['tomato' if v < 0 else 'steelblue' for v in act]
+        axes2[1, i+1].bar(action_dim_names, act, color=colors)
+        axes2[1, i+1].set_ylim(-1.1, 1.1)
+        axes2[1, i+1].axhline(0, color='black', linewidth=0.5)
+        axes2[1, i+1].set_title(f'Aktion\nt-{t}', fontsize=7)
+        axes2[1, i+1].tick_params(labelsize=6)
+
+    # Aktueller Slot Aktion
+    colors = ['tomato' if v < 0 else 'steelblue' for v in current_action]
+    axes2[1, 0].bar(action_dim_names, current_action, color=colors)
+    axes2[1, 0].set_ylim(-1.1, 1.1)
+    axes2[1, 0].axhline(0, color='black', linewidth=0.5)
+    axes2[1, 0].set_title('Aktion\n(aktuell)', fontsize=7)
+    axes2[1, 0].tick_params(labelsize=6)
 
     plt.tight_layout()
     plt.show()
