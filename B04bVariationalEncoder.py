@@ -90,7 +90,7 @@ class VariationalCNNEncoder(nn.Module):
             z       : (B, latent_dim) – Gesampelter Latent-Vektor
         """
         features = self.conv(x)
-        flat     = features.view(features.size(0), -1)
+        flat     = features.reshape(features.size(0), -1)
 
         mu      = self.fc_mu(flat)
         log_var = self.fc_log_var(flat)
@@ -171,7 +171,7 @@ class CNNDecoder(nn.Module):
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         x = self.fc(z)
-        x = x.view(x.size(0), 128, 2, 2)
+        x = x.reshape(x.size(0), 128, 2, 2)
         return self.deconv(x)
 
 
