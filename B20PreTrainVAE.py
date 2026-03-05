@@ -374,23 +374,32 @@ def main():
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     ckpt_path = os.path.join(ckpt_dir, f"pwn_checkpoint_{ts}.pt")
 
-    checkpoint = {
-        "encoder":      encoder.state_dict(),
-        "decoder":      decoder.state_dict(),
-        "total_steps":  args.epochs * len(dataset),
-        "train_steps":  args.epochs * (len(dataset) // args.batch_size),
-        "beta":         0.01,
-        "current_goal": "pretrain_vae",
-        "config":       {"source": args.source, "frames": args.frames,
-                         "epochs": args.epochs, "lr": args.lr},
-        "constants": {
-            "LATENT_DIM": LATENT_DIM,
-            "D_MODEL":    128,
-            "ACTION_DIM": 6,
-        },
-        "tag":          "pretrain_vae",
-        "result":       result,
+    # Basis-Checkpoint übernehmen (enthält ggf. CLIP goal_proj etc.)
+    try:
+        if args.checkpoint:
+            base_path = resolve_checkpoint(args.checkpoint)
+            checkpoint = torch.load(base_path, weights_only=False)
+        else:
+            checkpoint = {}
+    except FileNotFoundError:
+        checkpoint = {}
+
+    # VAE-Teile aktualisieren
+    checkpoint["encoder"]      = encoder.state_dict()
+    checkpoint["decoder"]      = decoder.state_dict()
+    checkpoint["total_steps"]  = args.epochs * len(dataset)
+    checkpoint["train_steps"]  = args.epochs * (len(dataset) // args.batch_size)
+    checkpoint["beta"]         = 0.01
+    checkpoint["current_goal"] = "pretrain_vae"
+    checkpoint["config"]       = {"source": args.source, "frames": args.frames,
+                                  "epochs": args.epochs, "lr": args.lr}
+    checkpoint["constants"]    = {
+        "LATENT_DIM": LATENT_DIM,
+        "D_MODEL":    128,
+        "ACTION_DIM": 6,
     }
+    checkpoint["tag"]          = "pretrain_vae"
+    checkpoint["result"]       = result
     torch.save(checkpoint, ckpt_path)
 
     print(f"\n  Checkpoint gespeichert: {ckpt_path}")
