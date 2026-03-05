@@ -308,6 +308,27 @@ Erstelle als erstes eine Liste der Bausteine die wir abarbeiten wollen.
 - **B15** – Kombination Intrinsic Reward + Gemini Reward
 
 ## Gruppe 6: Visualisierung & Monitoring
+```
+Original Plan          Was wir gebaut haben
+─────────────────────────────────────────────────────
+B16 – Live-Anzeige     B16 – Vollintegration   ← zu früh
+B17 – Metriken         B17 – ROS2-Interfaces   ← gut, aber falsch platziert
+B18 – Gemini-Feedback  B18 – ???
+
+B18 – Visualisierungs-Dashboard (Original-Plan B16+B17+B18)
+├── Live: aktuelles Bild vs. vorhergesagtes Bild
+├── Training-Metriken: Loss-Kurven, Reward-Verlauf
+└── Gemini-Feedback: wann gefragt, was geantwortet
+
+B19 – Vollintegration (was wir als B16 gebaut haben)
++ ROS2-Interfaces eingebaut
+
+B20 – Systemtest / Evaluation
+```
+- **B16** - Full Integration
+- **B17** – Saubere Roboter-Schnittstellen
+
+old Plan:
 - **B16** – Live-Anzeige (aktuelles Bild vs. vorhergesagtes Bild)
 - **B17** – Training-Metriken (Loss-Kurven, Reward-Verlauf)
 - **B18** – Gemini-Feedback-Anzeige (wann wurde Gemini gefragt, was hat er geantwortet)
