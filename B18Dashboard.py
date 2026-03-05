@@ -84,6 +84,7 @@ class TrainingDashboard:
 
     def setup(self):
         """Erstellt das Dashboard-Fenster."""
+        plt.ion()   # Interactive Mode – kein Blockieren
         self.fig = plt.figure(figsize=(18, 11))
         self.fig.patch.set_facecolor('#0d0d0d')
         self.fig.suptitle(
@@ -134,12 +135,13 @@ class TrainingDashboard:
             obs:           np.ndarray,           # (H,W,3) uint8
             pred:          np.ndarray,           # (H,W,3) float [0,1]
             metrics:       dict,
-            gemini_event:  dict       = None,    # optional
-            latent_z:      np.ndarray = None,    # (latent_dim,) optional
+            gemini_event:  dict       = None,
+            latent_z:      np.ndarray = None,
             scene:         str        = "",
             goal:          str        = "",
-            action_norm:   np.ndarray = None,    # (6,) optional
-            sigma:         np.ndarray = None,    # (6,) optional
+            action_norm:   np.ndarray = None,
+            sigma:         np.ndarray = None,
+            topdown:       np.ndarray = None,    # (H,W,3) Top-Down Karte optional
     ):
         """Aktualisiert alle Dashboard-Panels."""
         self._step  += 1
@@ -153,9 +155,26 @@ class TrainingDashboard:
             if k in self.hist:
                 self.hist[k].append(float(v))
 
-        # Prediction Error
-        obs_f  = obs.astype(float)/255.0
+        # pred auf obs-Größe skalieren falls nötig (z.B. 16×16 → 60×80)
+        obs_h, obs_w = obs.shape[:2]
         pred_f = np.clip(pred, 0, 1)
+        if pred_f.shape[:2] != (obs_h, obs_w):
+            try:
+                from PIL import Image as _PILImage
+                pred_pil = _PILImage.fromarray(
+                    (pred_f * 255).astype(np.uint8)
+                ).resize((obs_w, obs_h), _PILImage.NEAREST)
+                pred_f = np.array(pred_pil).astype(float) / 255.0
+            except ImportError:
+                # Ohne PIL: grob wiederholen
+                ry = obs_h // pred_f.shape[0]
+                rx = obs_w // pred_f.shape[1]
+                pred_f = np.repeat(np.repeat(pred_f, ry, axis=0),
+                                   rx, axis=1)
+                pred_f = pred_f[:obs_h, :obs_w]
+
+        # Prediction Error (auf gleicher Auflösung)
+        obs_f  = obs.astype(float) / 255.0
         self.hist["pred_error"].append(
             float(np.mean((obs_f - pred_f)**2))
         )
@@ -184,7 +203,7 @@ class TrainingDashboard:
 
         # ── Panel: Vorhergesagtes Bild ─────────────────
         self.ax_pred.clear()
-        pred_disp = np.clip(pred*255, 0, 255).astype(np.uint8)
+        pred_disp = (pred_f * 255).astype(np.uint8)
         self.ax_pred.imshow(pred_disp, interpolation='nearest')
         pe = self.hist["pred_error"][-1] if self.hist["pred_error"] else 0
         self.ax_pred.set_title(
@@ -227,69 +246,95 @@ class TrainingDashboard:
             bbox=dict(boxstyle='round', facecolor='#0d1b2a', alpha=0.9)
         )
 
-        # ── Panel: Kamera-Visualisierung ───────────────
+        # ── Panel: AUFTRAG (prominent, große Schrift) ──
         self.ax_cam.clear(); self.ax_cam.set_facecolor('#0d1b2a')
         self.ax_cam.axis('off')
-        if action_norm is not None:
-            pan_norm  = float(action_norm[2])
-            tilt_norm = float(action_norm[3])
-            pan_deg   = pan_norm * 90
-            tilt_deg  = tilt_norm * 45
-
-            # Kamera als Kreis mit Zeiger
-            circle = plt.Circle((0.5, 0.55), 0.3,
-                                color='#1a3a5c', zorder=2)
-            self.ax_cam.add_patch(circle)
-            pan_rad  = pan_norm  * np.pi/2
-            tilt_rad = tilt_norm * np.pi/4
-            px = 0.5 + 0.28*np.sin(pan_rad)
-            py = 0.55 + 0.28*np.sin(tilt_rad)
-            self.ax_cam.plot([0.5, px], [0.55, py],
-                             color='cyan', linewidth=3, zorder=4)
-            self.ax_cam.scatter([px],[py], color='cyan', s=80, zorder=5)
-            self.ax_cam.set_title(
-                f'Kamera\nPan={pan_deg:+.0f}° Tilt={tilt_deg:+.0f}°',
-                fontsize=8, color='white'
-            )
+        # Farbbalken Reward
+        if self.gemini_events:
+            r = self.gemini_events[-1]["event"].get("reward", 0)
+            bar_color = ('seagreen' if r > 0.6 else
+                         'gold'     if r > 0.3 else 'tomato')
         else:
-            self.ax_cam.set_title('Kamera', fontsize=8, color='white')
-        self.ax_cam.set_xlim(0,1); self.ax_cam.set_ylim(0,1)
+            r, bar_color = 0.0, 'gray'
+        # Großes Ziel-Label
+        self.ax_cam.text(
+            0.5, 0.72, "AUFTRAG",
+            transform=self.ax_cam.transAxes,
+            fontsize=9, fontweight='bold',
+            ha='center', color='gold'
+        )
+        self.ax_cam.text(
+            0.5, 0.52, f'"{goal}"',
+            transform=self.ax_cam.transAxes,
+            fontsize=8.5, ha='center', color='white',
+            wrap=True
+        )
+        prog = self.hist["goal_progress"][-1] \
+            if self.hist["goal_progress"] else 0
+        # Fortschrittsbalken
+        bar_bg = plt.Rectangle((0.05, 0.28), 0.9, 0.1,
+                               transform=self.ax_cam.transAxes,
+                               color='#333333', clip_on=False)
+        bar_fg = plt.Rectangle((0.05, 0.28), 0.9*prog, 0.1,
+                               transform=self.ax_cam.transAxes,
+                               color=bar_color, clip_on=False)
+        self.ax_cam.add_patch(bar_bg)
+        self.ax_cam.add_patch(bar_fg)
+        self.ax_cam.text(
+            0.5, 0.22, f"Fortschritt: {prog*100:.0f}%  |  r={r:.2f}",
+            transform=self.ax_cam.transAxes,
+            fontsize=7.5, ha='center', color=bar_color
+        )
+        self.ax_cam.text(
+            0.5, 0.10, f"Szene: {scene}  |  Step: {self._step}",
+            transform=self.ax_cam.transAxes,
+            fontsize=7, ha='center', color='lightgray'
+        )
+        self.ax_cam.set_title('Aktueller Auftrag',
+                              fontsize=9, color='white')
 
-        # ── Panel: Arc-Visualisierung ──────────────────
+        # ── Panel: Top-Down / Arc-Visualisierung ───────
         self.ax_arc.clear(); self.ax_arc.set_facecolor('#0d1b2a')
-        self.ax_arc.axis('off')
-        if action_norm is not None:
-            lx_norm  = float(action_norm[0])
-            arc_norm = float(action_norm[4])
-            arc_phys = (arc_norm+1)/2*4-2   # denorm zu m
-
-            robot = plt.Circle((0.5, 0.35), 0.07,
-                               color='steelblue', zorder=4)
-            self.ax_arc.add_patch(robot)
-
-            if abs(arc_phys) > 0.1:
-                r_n = np.clip(arc_phys/2, -1, 1)
-                cx  = 0.5 + r_n*0.25
-                th  = np.linspace(-np.pi/2, np.pi/6, 40)
-                ax  = cx + abs(r_n*0.25)*np.cos(th)
-                ay  = 0.35+abs(r_n*0.25)*np.sin(th)
-                self.ax_arc.plot(ax, ay, color='orange', linewidth=2.5)
-                desc = f"R={arc_phys:+.1f}m"
-            else:
-                arr_len = lx_norm * 0.35
-                self.ax_arc.annotate(
-                    "", xy=(0.5, 0.35+arr_len), xytext=(0.5, 0.35),
-                    arrowprops=dict(arrowstyle='->',
-                                    color='lime', lw=2.5, mutation_scale=15)
-                )
-                desc = "geradeaus"
-
-            self.ax_arc.set_title(
-                f'Arc-Movement\n{desc}', fontsize=8, color='white'
-            )
+        if topdown is not None:
+            # MiniWorld Top-Down Karte (Wände + Objekte sichtbar)
+            self.ax_arc.imshow(topdown, interpolation='nearest')
+            self.ax_arc.set_title('Top-Down (MiniWorld)',
+                                  fontsize=8, color='white')
+            self.ax_arc.axis('off')
         else:
-            self.ax_arc.set_title('Arc', fontsize=8, color='white')
-        self.ax_arc.set_xlim(0,1); self.ax_arc.set_ylim(0,1)
+            # Fallback: Arc-Visualisierung
+            self.ax_arc.axis('off')
+            if action_norm is not None:
+                lx_norm  = float(action_norm[0])
+                arc_norm = float(action_norm[4])
+                arc_phys = (arc_norm+1)/2*4-2
+                robot_c  = plt.Circle((0.5, 0.35), 0.07,
+                                      color='steelblue', zorder=4)
+                self.ax_arc.add_patch(robot_c)
+                if abs(arc_phys) > 0.1:
+                    r_n = np.clip(arc_phys/2, -1, 1)
+                    cx2 = 0.5 + r_n*0.25
+                    th  = np.linspace(-np.pi/2, np.pi/6, 40)
+                    self.ax_arc.plot(
+                        cx2 + abs(r_n*0.25)*np.cos(th),
+                        0.35 + abs(r_n*0.25)*np.sin(th),
+                        color='orange', linewidth=2.5
+                    )
+                    desc = f"Kurve R={arc_phys:+.1f}m"
+                else:
+                    self.ax_arc.annotate(
+                        "", xy=(0.5, 0.35+lx_norm*0.35),
+                        xytext=(0.5, 0.35),
+                        arrowprops=dict(arrowstyle='->',
+                                        color='lime', lw=2.5,
+                                        mutation_scale=15)
+                    )
+                    desc = "geradeaus"
+                self.ax_arc.set_title(f'Bewegung: {desc}',
+                                      fontsize=8, color='white')
+            else:
+                self.ax_arc.set_title('Bewegung', fontsize=8, color='white')
+            self.ax_arc.set_xlim(0,1); self.ax_arc.set_ylim(0,1)
 
         # ── Panel: Free Energy ─────────────────────────
         self.ax_fe.clear()

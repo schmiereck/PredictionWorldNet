@@ -49,10 +49,6 @@ import numpy as np
 
 import importlib.util
 
-from OverheadMapView import OverheadMapView
-overhead = OverheadMapView()
-overhead.setup()
-
 def _load(filename: str, classname: str = None):
     """Lädt ein Modul aus dem gleichen Verzeichnis."""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -97,6 +93,14 @@ try:
 except Exception as e:
     print(f"  B18 FEHLER: {e}")
     sys.exit(1)
+
+try:
+    _ovm = _load("OverheadMapView.py")
+    OverheadMapView = _ovm.OverheadMapView
+    print("  OverheadMapView           ✓")
+except Exception as e:
+    print(f"  OverheadMapView nicht gefunden: {e}")
+    OverheadMapView = None
 
 print()
 
@@ -289,6 +293,7 @@ class Orchestrator:
         self.robot        = None
         self.ml_system    = None
         self.dashboard    = None
+        self.overhead     = None
         self.gemini       = None
 
     def setup(self):
@@ -367,14 +372,37 @@ class Orchestrator:
         print("Dashboard (B18): ✓")
         print()
 
+        # ── Overhead Map ───────────────────────────────
+        if OverheadMapView is not None:
+            self.overhead = OverheadMapView(
+                map_size=30.0, trail_length=self.cfg["n_steps"],
+                title=f"Draufsicht  |  {self.cfg['mode'].upper()}"
+            )
+            self.overhead.setup()
+            print("Overhead Map:   ✓")
+        else:
+            print("Overhead Map:   ✗ (OverheadMapView.py nicht gefunden)")
+        print()
+
         return self
 
-    def _get_scene_action(self, scene: str) -> np.ndarray:
-        """Typische Aktion für Szene (Mock-Policy, bis B16 übernimmt)."""
-        base = np.array(SCENE_ACTIONS[scene], dtype=np.float32)
-        return np.clip(
-            base + 0.08*np.random.randn(6).astype(np.float32), -1, 1
-        )
+    def _get_miniworld_action(self, step: int) -> np.ndarray:
+        """
+        Explorations-Policy für MiniWorld.
+        Wechselt zwischen Vorwärts-Fahren und Drehen
+        um die Wand-Problem zu vermeiden.
+        """
+        phase = (step // 8) % 4   # alle 8 Steps Phase wechseln
+        if phase == 0:             # vorwärts
+            act = [0.8, 0.0, 0.0, 0.0, 0.0, 0.0]
+        elif phase == 1:           # links drehen
+            act = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        elif phase == 2:           # vorwärts
+            act = [0.8, 0.0, 0.0, 0.0, 0.0, 0.0]
+        else:                      # rechts drehen
+            act = [0.0, -0.8, 0.0, 0.0, 0.0, 0.0]
+        noise = 0.05 * np.random.randn(6).astype(np.float32)
+        return np.clip(np.array(act, dtype=np.float32) + noise, -1, 1)
 
     def run(self):
         """Haupt-Loop."""
@@ -405,10 +433,15 @@ class Orchestrator:
                 self._goal  = self.ml_system.current_goal
 
             # ── Aktion aus ML-System ───────────────────
-            # (vereinfacht: Szenen-Policy bis B16 voll trainiert)
-            act_arr = self._get_scene_action(self._scene
-                                             if self._scene in SCENE_ACTIONS
-                                             else "red_box")
+            if mode == "miniworld":
+                act_arr = self._get_miniworld_action(step)
+            else:
+                act_arr = np.clip(
+                    np.array(SCENE_ACTIONS.get(
+                        self._scene, SCENE_ACTIONS["red_box"]
+                    ), dtype=np.float32) +
+                    0.08*np.random.randn(6).astype(np.float32), -1, 1
+                )
 
             # ── Robot Step ─────────────────────────────
             if isinstance(self.obs_source, MiniWorldObsSource):
@@ -426,19 +459,27 @@ class Orchestrator:
             )
 
             # ── High-res für Gemini ─────────────────────
+            # WICHTIG: Original-Auflösung senden, nicht 16×16 upscaled
             if ml_result.get("gem_called"):
-                hi_obs = self.robot.get_high_res()
-                ass    = self.gemini.assess_image(
-                    hi_obs.image,
+                if isinstance(self.obs_source, MiniWorldObsSource) \
+                        and self.obs_source.is_miniworld:
+                    # MiniWorld: direkt Original-Frame (60×80) verwenden
+                    gemini_image = self.obs_source._obs
+                else:
+                    gemini_image = self.robot.get_high_res().image
+
+                ass = self.gemini.assess_image(
+                    gemini_image,
                     self.ml_system.current_goal,
-                    {"linear_x": float(act_arr[0]),
-                     "angular_z": float(act_arr[1]),
+                    {"linear_x":   float(act_arr[0]),
+                     "angular_z":  float(act_arr[1]),
                      "camera_pan": float((act_arr[2]+1)/2*180-90),
-                     "camera_tilt": float((act_arr[3]+1)/2*90-45)},
+                     "camera_tilt":float((act_arr[3]+1)/2*90-45)},
                 )
-                print(f"  [Step {step:4d}] Gemini ER: "
-                      f"r={ass['reward']:.3f}  "
-                      f"'{ass.get('situation','')[:45]}'")
+                # Vollständige Ausgabe
+                print(f"  [Step {step:4d}] Gemini ER: r={ass['reward']:.3f}")
+                print(f"             Situation:  {ass.get('situation','')}")
+                print(f"             Empfehlung: {ass.get('recommendation','')}")
                 gemini_event = ass
             else:
                 gemini_event = None
@@ -447,9 +488,26 @@ class Orchestrator:
             if (step % self.cfg["update_display"] == 0 or
                     step == n-1):
 
+                # Original-Auflösung für Dashboard (nicht 16×16)
+                if isinstance(self.obs_source, MiniWorldObsSource) \
+                        and self.obs_source.is_miniworld:
+                    display_obs = self.obs_source._obs   # 60×80 Original
+                    # MiniWorld Top-Down Karte (Wände + Objekte sichtbar)
+                    try:
+                        topdown = self.obs_source._env.render_top_view()
+                    except Exception:
+                        try:
+                            topdown = self.obs_source._env.render(
+                                mode='top_down')
+                        except Exception:
+                            topdown = None
+                else:
+                    display_obs = obs.image
+                    topdown     = None
+
                 m = self.ml_system.metrics
                 self.dashboard.update(
-                    obs=obs.image,
+                    obs=display_obs,
                     pred=ml_result["pred_obs"],
                     metrics={
                         "fe":              m["fe"][-1]      if m["fe"]      else 0,
@@ -468,9 +526,16 @@ class Orchestrator:
                     goal=self.ml_system.current_goal,
                     action_norm=act_arr,
                     sigma=ml_result.get("sigma"),
+                    topdown=topdown,
                 )
 
-            overhead.update(self.action_sink.last_ros2, scene=self._scene, gemini_event=gemini_event)
+            # ── Overhead Map Update (jeden Step) ────────
+            if self.overhead is not None:
+                self.overhead.update(
+                    action_ros2=self.action_sink.last_ros2 or {},
+                    scene=self._scene,
+                    gemini_event=gemini_event,
+                )
 
             obs = next_obs
 
@@ -517,6 +582,8 @@ class Orchestrator:
 
     def close(self):
         self.robot.close()
+        if self.overhead is not None:
+            self.overhead.close()
         self.dashboard.close()
 
 

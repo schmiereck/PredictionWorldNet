@@ -136,6 +136,7 @@ class OverheadMapView:
 
     def setup(self):
         """Öffnet das Karten-Fenster."""
+        plt.ion()   # Interactive Mode
         self.fig = plt.figure(
             figsize=(9, 8),
             num="Draufsicht"
