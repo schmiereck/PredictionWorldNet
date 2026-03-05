@@ -60,6 +60,38 @@ draw_scene = _b16.draw_scene
 SCENE_TYPES = _b16.SCENE_TYPES
 
 
+def _register_prediction_world_env(gym):
+    """Registriert PredictionWorld-OneRoom (falls noch nicht geschehen)."""
+    env_id = "PredictionWorld-OneRoom-v0"
+    if env_id in gym.envs.registry:
+        return
+    from miniworld.envs.oneroom import OneRoom
+    from miniworld.entity import Box, Ball, COLORS, COLOR_NAMES
+    if "orange" not in COLORS:
+        COLORS["orange"] = np.array([1.0, 0.5, 0.0])
+    if "white" not in COLORS:
+        COLORS["white"] = np.array([1.0, 1.0, 1.0])
+    for c in ("orange", "white"):
+        if c not in COLOR_NAMES:
+            COLOR_NAMES.append(c)
+
+    class PredictionWorldRoom(OneRoom):
+        def _gen_world(self):
+            self.add_rect_room(min_x=0, max_x=self.size,
+                               min_z=0, max_z=self.size)
+            self.box = self.place_entity(Box(color="red"))
+            self.place_entity(Box(color="yellow"))
+            self.place_entity(Box(color="white"))
+            self.place_entity(Box(color="orange"))
+            self.place_entity(Ball(color="green"))
+            self.place_entity(Ball(color="blue"))
+            self.place_agent()
+
+    gym.register(id=env_id,
+                 entry_point=lambda **kw: PredictionWorldRoom(**kw),
+                 max_episode_steps=300)
+
+
 # ─────────────────────────────────────────────
 # DATASET: Frames sammeln
 # ─────────────────────────────────────────────
@@ -76,6 +108,8 @@ class MiniWorldFrameDataset(Dataset):
             import gymnasium as gym
             import miniworld  # noqa: F401
             from PIL import Image as PILImage
+
+            _register_prediction_world_env(gym)
 
             env = gym.make(env_name, render_mode="rgb_array", view="agent")
             obs, _ = env.reset()
@@ -265,7 +299,7 @@ def main():
         help="Datenquelle (default: miniworld)"
     )
     parser.add_argument(
-        "--env", default="MiniWorld-OneRoom-v0",
+        "--env", default="PredictionWorld-OneRoom-v0",
         help="MiniWorld Environment (nur bei --source miniworld)"
     )
     parser.add_argument(

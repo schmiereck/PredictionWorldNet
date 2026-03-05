@@ -63,22 +63,57 @@ _b05 = _load_module("B05ClipTextEncoder.py")
 ClipTextEncoder = _b05.CLIPTextEncoder
 
 
+def _register_prediction_world_env(gym):
+    """Registriert PredictionWorld-OneRoom (falls noch nicht geschehen)."""
+    env_id = "PredictionWorld-OneRoom-v0"
+    if env_id in gym.envs.registry:
+        return
+    from miniworld.envs.oneroom import OneRoom
+    from miniworld.entity import Box, Ball, COLORS, COLOR_NAMES
+    if "orange" not in COLORS:
+        COLORS["orange"] = np.array([1.0, 0.5, 0.0])
+    if "white" not in COLORS:
+        COLORS["white"] = np.array([1.0, 1.0, 1.0])
+    for c in ("orange", "white"):
+        if c not in COLOR_NAMES:
+            COLOR_NAMES.append(c)
+
+    class PredictionWorldRoom(OneRoom):
+        def _gen_world(self):
+            self.add_rect_room(min_x=0, max_x=self.size,
+                               min_z=0, max_z=self.size)
+            self.box = self.place_entity(Box(color="red"))
+            self.place_entity(Box(color="yellow"))
+            self.place_entity(Box(color="white"))
+            self.place_entity(Box(color="orange"))
+            self.place_entity(Ball(color="green"))
+            self.place_entity(Ball(color="blue"))
+            self.place_agent()
+
+    gym.register(id=env_id,
+                 entry_point=lambda **kw: PredictionWorldRoom(**kw),
+                 max_episode_steps=300)
+
+
 # ─────────────────────────────────────────────
 # AUTO-LABELING (Farb-Heuristik)
 # ─────────────────────────────────────────────
 
 LABEL_DESCRIPTIONS = {
-    "red":   "a red object or red box in the scene",
-    "green": "a green object or green surface",
-    "blue":  "a blue object or blue wall",
-    "wall":  "a plain wall or corridor with no objects",
-    "empty": "an empty room with nothing interesting",
+    "red":    "a red box in the scene",
+    "green":  "a green ball or green sphere in the scene",
+    "blue":   "a blue ball or blue sphere in the scene",
+    "yellow": "a yellow box in the scene",
+    "orange": "an orange box in the scene",
+    "white":  "a white box or bright object in the scene",
+    "wall":   "a plain wall or corridor with no objects",
+    "empty":  "an empty room with nothing interesting",
 }
 
 def classify_frame(frame: np.ndarray) -> str:
     """
     Farb-Heuristik für 128×128 MiniWorld-Frames.
-    Prüft ob eine Farbe deutlich dominiert.
+    Erkennt: red, green, blue, yellow, orange, white.
     """
     if frame.dtype == np.uint8:
         f = frame.astype(np.float32) / 255.0
@@ -88,19 +123,24 @@ def classify_frame(frame: np.ndarray) -> str:
     r, g, b = f[:,:,0], f[:,:,1], f[:,:,2]
     mean_r, mean_g, mean_b = np.mean(r), np.mean(g), np.mean(b)
 
-    # Pixel mit deutlicher Farbdominanz zählen
-    red_pixels   = np.mean((r > g + 0.1) & (r > b + 0.1) & (r > 0.3))
-    green_pixels = np.mean((g > r + 0.1) & (g > b + 0.1) & (g > 0.3))
-    blue_pixels  = np.mean((b > r + 0.1) & (b > g + 0.1) & (b > 0.3))
+    # Farbspezifische Pixel-Masken
+    red_px    = np.mean((r > g + 0.15) & (r > b + 0.15) & (r > 0.4))
+    green_px  = np.mean((g > r + 0.15) & (g > b + 0.15) & (g > 0.4))
+    blue_px   = np.mean((b > r + 0.15) & (b > g + 0.15) & (b > 0.4))
+    yellow_px = np.mean((r > 0.5) & (g > 0.5) & (b < 0.3) & (r > b + 0.2))
+    orange_px = np.mean((r > 0.5) & (g > 0.2) & (g < 0.6) & (b < 0.2)
+                         & (r > g + 0.1))
+    white_px  = np.mean((r > 0.7) & (g > 0.7) & (b > 0.7)
+                         & (np.abs(r - g) < 0.15) & (np.abs(r - b) < 0.15))
 
-    threshold = 0.05  # mind. 5% der Pixel müssen farbdominant sein
-
-    if red_pixels > threshold and red_pixels >= green_pixels and red_pixels >= blue_pixels:
-        return "red"
-    if green_pixels > threshold and green_pixels >= red_pixels and green_pixels >= blue_pixels:
-        return "green"
-    if blue_pixels > threshold and blue_pixels >= red_pixels and blue_pixels >= green_pixels:
-        return "blue"
+    threshold = 0.03
+    scores = {
+        "red": red_px, "green": green_px, "blue": blue_px,
+        "yellow": yellow_px, "orange": orange_px, "white": white_px,
+    }
+    best = max(scores, key=scores.get)
+    if scores[best] > threshold:
+        return best
 
     brightness = (mean_r + mean_g + mean_b) / 3.0
     return "wall" if brightness > 0.25 else "empty"
@@ -113,7 +153,7 @@ def classify_frame(frame: np.ndarray) -> str:
 class LabeledFrameDataset(Dataset):
     """Frames mit Auto-Labels."""
 
-    def __init__(self, n_frames=2000, env_name="MiniWorld-OneRoom-v0",
+    def __init__(self, n_frames=2000, env_name="PredictionWorld-OneRoom-v0",
                  source="miniworld"):
         self.frames = []
         self.labels = []
@@ -137,6 +177,8 @@ class LabeledFrameDataset(Dataset):
             import gymnasium as gym
             import miniworld  # noqa: F401
             from PIL import Image as PILImage
+
+            _register_prediction_world_env(gym)
 
             env = gym.make(env_name, render_mode="rgb_array", view="agent")
             obs, _ = env.reset()
@@ -372,7 +414,7 @@ def main():
         help="Datenquelle"
     )
     parser.add_argument(
-        "--env", default="MiniWorld-OneRoom-v0",
+        "--env", default="PredictionWorld-OneRoom-v0",
         help="MiniWorld Environment"
     )
     parser.add_argument(

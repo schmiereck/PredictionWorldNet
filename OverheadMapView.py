@@ -221,15 +221,28 @@ class OverheadMapView:
                 ent_color = '#ffffff'
                 ent_marker = 'o'
                 ent_label = type(ent).__name__
+                _mw_colors = {
+                    "red": "#ff0000", "green": "#00ff00",
+                    "blue": "#0000ff", "yellow": "#ffff00",
+                    "grey": "#666666", "purple": "#7025c2",
+                    "orange": "#ff8000", "white": "#ffffff",
+                }
                 try:
-                    if hasattr(ent, 'color'):
+                    if hasattr(ent, 'color') and isinstance(ent.color, str):
+                        ent_color = _mw_colors.get(ent.color, ent_color)
+                    elif hasattr(ent, 'color') and hasattr(ent.color, '__len__') and len(ent.color) >= 3:
                         c = ent.color
-                        if hasattr(c, '__len__') and len(c) >= 3:
-                            ent_color = '#{:02x}{:02x}{:02x}'.format(
-                                int(c[0] * 255) if c[0] <= 1 else int(c[0]),
-                                int(c[1] * 255) if c[1] <= 1 else int(c[1]),
-                                int(c[2] * 255) if c[2] <= 1 else int(c[2]),
-                            )
+                        ent_color = '#{:02x}{:02x}{:02x}'.format(
+                            int(c[0] * 255) if c[0] <= 1 else int(c[0]),
+                            int(c[1] * 255) if c[1] <= 1 else int(c[1]),
+                            int(c[2] * 255) if c[2] <= 1 else int(c[2]),
+                        )
+                    if ent_color == '#ffffff' and hasattr(ent, 'mesh_name'):
+                        mn = ent.mesh_name
+                        for cname, chex in _mw_colors.items():
+                            if cname in mn:
+                                ent_color = chex
+                                break
                 except Exception:
                     pass
                 # Marker nach Typ
@@ -261,7 +274,7 @@ class OverheadMapView:
             agent_dir = mw.agent.dir
             self.pose.x = float(ax)
             self.pose.y = float(-az)
-            self.pose.heading = float(agent_dir)
+            self.pose.heading = float(agent_dir) % (2 * np.pi)
             return True
         except Exception:
             return False
@@ -308,7 +321,7 @@ class OverheadMapView:
         self.cam_tilt_rad = cam.get("tilt", 0.0)
 
         # Trail + Szenen-Visits
-        self.trail.append((self.pose.x, self.pose.y, scene))
+        self.trail.append((self.pose.x, self.pose.y, self.pose.heading, scene))
         self.scene_visits.append((self.pose.x, self.pose.y, scene))
 
         # Gemini-Event
@@ -330,8 +343,8 @@ class OverheadMapView:
         # ── Auto-Zoom: Bereich an Roboter anpassen ────
         # Alle bisherigen Positionen berücksichtigen
         if len(self.trail) >= 2:
-            xs = [x for x,y,_ in self.trail]
-            ys = [y for x,y,_ in self.trail]
+            xs = [t[0] for t in self.trail]
+            ys = [t[1] for t in self.trail]
             margin = max(3.0, self.map_size * 0.2)
             x_min = min(xs) - margin
             x_max = max(xs) + margin
@@ -365,10 +378,10 @@ class OverheadMapView:
 
         # ── Trail ──────────────────────────────────────
         if len(self.trail) >= 2:
-            trail_arr = np.array([(x,y) for x,y,_ in self.trail])
+            trail_arr = np.array([(t[0],t[1]) for t in self.trail])
             # Färbung nach Szene
             for i in range(1, len(self.trail)):
-                s   = self.trail[i][2]
+                s   = self.trail[i][3]
                 col = SCENE_COLORS.get(s, '#888888')
                 self.ax.plot(
                     [trail_arr[i-1,0], trail_arr[i,0]],
@@ -471,7 +484,7 @@ class OverheadMapView:
 
         # ── Legende ───────────────────────────────────
         legend_handles = []
-        seen_scenes = set(s for _,_,s in self.trail)
+        seen_scenes = set(t[3] for t in self.trail)
         for s in seen_scenes:
             col = SCENE_COLORS.get(s, '#888888')
             legend_handles.append(
@@ -495,7 +508,7 @@ class OverheadMapView:
         self.ax_dist.clear()
         self.ax_dist.set_facecolor('#111111')
         if len(self.trail) >= 2:
-            trail_arr = np.array([(x,y) for x,y,_ in self.trail])
+            trail_arr = np.array([(t[0],t[1]) for t in self.trail])
             dists = np.cumsum(np.linalg.norm(
                 np.diff(trail_arr, axis=0), axis=1))
             self.ax_dist.plot(dists, color='seagreen',
@@ -508,17 +521,13 @@ class OverheadMapView:
         # ── Rotation-Plot ──────────────────────────────
         self.ax_rot.clear()
         self.ax_rot.set_facecolor('#111111')
-        headings = [self.pose.heading]   # Näherung
-        steps_range = range(len(self.trail))
         if len(self.trail) >= 2:
             self.ax_rot.plot(
-                [h*180/np.pi for h in [
-                    t[2] if isinstance(t[2], float) else 0
-                    for t in self.trail
-                ]],
+                [t[2] * 180 / np.pi for t in self.trail],
                 color='mediumpurple', linewidth=1.5
             )
-        self.ax_rot.set_title(f'Heading: {self.pose.heading*180/np.pi:.0f}°',
+        heading_deg = (self.pose.heading * 180 / np.pi) % 360
+        self.ax_rot.set_title(f'Heading: {heading_deg:.0f}°',
                               fontsize=8, color='white')
         self.ax_rot.tick_params(colors='white', labelsize=6)
 
@@ -529,7 +538,7 @@ class OverheadMapView:
         info_txt = (
             f"Step: {self.step_count:4d}  |  "
             f"Pos: ({self.pose.x:+.2f}, {self.pose.y:+.2f})  |  "
-            f"Heading: {self.pose.heading*180/np.pi:.0f}°  |  "
+            f"Heading: {(self.pose.heading*180/np.pi) % 360:.0f}°  |  "
             f"Distanz: {self.total_dist:.2f}m  |  "
             f"Kamera Pan={pan_deg:+.0f}° Tilt={tilt_deg:+.0f}°  |  "
             f"Gemini-Calls: {len(self.gemini_pts)}  |  "

@@ -123,6 +123,53 @@ import matplotlib
 matplotlib.use('TkAgg')
 
 # ─────────────────────────────────────────────
+# CUSTOM MINIWORLD ENVIRONMENT
+# ─────────────────────────────────────────────
+
+def _register_prediction_world_env(gym):
+    """Registriert PredictionWorld-OneRoom mit mehreren Objekten."""
+    env_id = "PredictionWorld-OneRoom-v0"
+    if env_id in gym.envs.registry:
+        return
+
+    from miniworld.envs.oneroom import OneRoom
+    from miniworld.entity import Box, Ball, COLORS, COLOR_NAMES
+
+    # Fehlende Farben nachtragen
+    if "orange" not in COLORS:
+        COLORS["orange"] = np.array([1.0, 0.5, 0.0])
+    if "white" not in COLORS:
+        COLORS["white"] = np.array([1.0, 1.0, 1.0])
+    for c in ("orange", "white"):
+        if c not in COLOR_NAMES:
+            COLOR_NAMES.append(c)
+
+    class PredictionWorldRoom(OneRoom):
+        """OneRoom mit mehreren farbigen Objekten."""
+
+        def _gen_world(self):
+            self.add_rect_room(min_x=0, max_x=self.size,
+                               min_z=0, max_z=self.size)
+            # Boxen
+            self.box        = self.place_entity(Box(color="red"))
+            self.box_yellow = self.place_entity(Box(color="yellow"))
+            self.box_white  = self.place_entity(Box(color="white"))
+            self.box_orange = self.place_entity(Box(color="orange"))
+
+            # Kugeln
+            self.ball_green = self.place_entity(Ball(color="green"))
+            self.ball_blue  = self.place_entity(Ball(color="blue"))
+
+            self.place_agent()
+
+    gym.register(
+        id=env_id,
+        entry_point=lambda **kw: PredictionWorldRoom(**kw),
+        max_episode_steps=300,
+    )
+
+
+# ─────────────────────────────────────────────
 # MINIWORLD OBSERVATION SOURCE
 # ─────────────────────────────────────────────
 
@@ -135,6 +182,7 @@ class MiniWorldObsSource(_b17.ObservationSource):
         pip install miniworld
 
     Verfügbare Envs:
+        PredictionWorld-OneRoom-v0  (mehrere Objekte)
         MiniWorld-Hallway-v0
         MiniWorld-OneRoom-v0
         MiniWorld-FourRooms-v0
@@ -142,7 +190,7 @@ class MiniWorldObsSource(_b17.ObservationSource):
         MiniWorld-Maze-v0
     """
 
-    def __init__(self, env_name: str = "MiniWorld-OneRoom-v0",
+    def __init__(self, env_name: str = "PredictionWorld-OneRoom-v0",
                  low_res=(128,128), high_res=(256,256),
                  render_mode: str = "rgb_array"):
         self._env_name  = env_name
@@ -158,7 +206,17 @@ class MiniWorldObsSource(_b17.ObservationSource):
         try:
             import gymnasium as gym
             import miniworld
+            import miniworld.entity as _mw_entity
             self._gym = gym
+
+            # Farben "orange" und "white" ergänzen (fehlen in MiniWorld)
+            if "orange" not in _mw_entity.COLORS:
+                _mw_entity.COLORS["orange"] = np.array([1.0, 0.5, 0.0])
+            if "white" not in _mw_entity.COLORS:
+                _mw_entity.COLORS["white"] = np.array([1.0, 1.0, 1.0])
+
+            # Custom Environment registrieren (falls noch nicht geschehen)
+            _register_prediction_world_env(gym)
 
             self._env = gym.make(env_name, render_mode=render_mode,
                                  view="agent")
@@ -307,7 +365,7 @@ class Orchestrator:
         "n_steps":           500,
         "scene_switch":      40,
         "update_display":    8,
-        "miniworld_env":     "MiniWorld-OneRoom-v0",
+        "miniworld_env":     "PredictionWorld-OneRoom-v0",
         "buffer_size":       1000,
         "batch_size":        16,
         "lr":                1e-3,
@@ -767,7 +825,7 @@ def parse_args():
         help="Ausführungs-Modus (default: mock)"
     )
     parser.add_argument(
-        "--env", default="MiniWorld-OneRoom-v0",
+        "--env", default="PredictionWorld-OneRoom-v0",
         help="MiniWorld Gym Environment"
     )
     parser.add_argument(
