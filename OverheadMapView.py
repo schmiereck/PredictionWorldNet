@@ -195,9 +195,9 @@ class OverheadMapView:
             for room in mw.rooms:
                 outline = room.outline  # shape (N, 3) mit [x, y, z]
                 if outline is not None and len(outline) >= 3:
-                    # (x, z) extrahieren → 2D Polygon
+                    # (x, -z) extrahieren → 2D Polygon (Z negiert für korrekte Links/Rechts-Zuordnung)
                     poly_x = [p[0] for p in outline]
-                    poly_y = [p[2] for p in outline]
+                    poly_y = [-p[2] for p in outline]
                     # Polygon schließen
                     poly_x.append(poly_x[0])
                     poly_y.append(poly_y[0])
@@ -241,7 +241,7 @@ class OverheadMapView:
                 elif 'key' in name:
                     ent_marker = 'P'
                 self.ax.scatter(
-                    float(ex), float(ez),
+                    float(ex), float(-ez),
                     c=ent_color, marker=ent_marker,
                     s=120, zorder=5, edgecolors='white',
                     linewidths=0.8, label=ent_label
@@ -260,8 +260,8 @@ class OverheadMapView:
             ax, _, az = mw.agent.pos
             agent_dir = mw.agent.dir
             self.pose.x = float(ax)
-            self.pose.y = float(az)
-            self.pose.heading = float(-agent_dir)
+            self.pose.y = float(-az)
+            self.pose.heading = float(agent_dir)
             return True
         except Exception:
             return False
@@ -281,13 +281,6 @@ class OverheadMapView:
 
         self.step_count += 1
         self.last_scene  = scene
-
-        if self.step_count <= 5 or self.step_count % 50 == 0:
-            has_data = bool(action_ros2.get("twist"))
-            print(f"  [Overhead] update() step={self.step_count}, "
-                  f"id={id(self):#x}, "
-                  f"trail_len={len(self.trail)}, trail_id={id(self.trail):#x}, "
-                  f"pose=({self.pose.x:.1f},{self.pose.y:.1f})")
 
         # ── Dead Reckoning ─────────────────────────────
         twist = action_ros2.get("twist", {})
@@ -317,9 +310,6 @@ class OverheadMapView:
         # Trail + Szenen-Visits
         self.trail.append((self.pose.x, self.pose.y, scene))
         self.scene_visits.append((self.pose.x, self.pose.y, scene))
-
-        if self.step_count <= 5 or self.step_count % 50 == 0:
-            print(f"  [Overhead] AFTER append: trail_len={len(self.trail)}")
 
         # Gemini-Event
         if gemini_event is not None:

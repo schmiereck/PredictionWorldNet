@@ -654,47 +654,37 @@ class Orchestrator:
                     topdown     = None
 
                 m = self.ml_system.metrics
-                try:
-                    self.dashboard.update(
-                        obs=display_obs,
-                        pred=ml_result["pred_obs"],
-                        metrics={
-                            "fe":              m["fe"][-1]      if m["fe"]      else 0,
-                            "recon":           m["recon"][-1]   if m["recon"]   else 0,
-                            "kl":              m["kl"][-1]      if m["kl"]      else 0,
-                            "r_intrinsic":     m["r_intrinsic"][-1] if m["r_intrinsic"] else 0,
-                            "r_gemini":        m["r_gemini"][-1]    if m["r_gemini"]    else 0,
-                            "r_total":         m["r_total"][-1]     if m["r_total"]     else 0,
-                            "goal_progress":   m["goal_progress"][-1] if m["goal_progress"] else 0,
-                            "beta":            self.ml_system.beta,
-                            "lr":              self.ml_system.optimizer.param_groups[0]["lr"],
-                            "gemini_interval": m["gemini_interval"][-1] if m["gemini_interval"] else 0,
-                        },
-                        gemini_event=gemini_event,
-                        scene=self._scene,
-                        goal=self.ml_system.current_goal,
-                        action_norm=act_arr,
-                        sigma=ml_result.get("sigma"),
-                        topdown=topdown,
-                        gemini_hires=self._last_gemini_image,
-                    )
-                except Exception as _e:
-                    import traceback
-                    print(f"  [FEHLER] dashboard.update(): {_e}")
-                    traceback.print_exc()
+                self.dashboard.update(
+                    obs=display_obs,
+                    pred=ml_result["pred_obs"],
+                    metrics={
+                        "fe":              m["fe"][-1]      if m["fe"]      else 0,
+                        "recon":           m["recon"][-1]   if m["recon"]   else 0,
+                        "kl":              m["kl"][-1]      if m["kl"]      else 0,
+                        "r_intrinsic":     m["r_intrinsic"][-1] if m["r_intrinsic"] else 0,
+                        "r_gemini":        m["r_gemini"][-1]    if m["r_gemini"]    else 0,
+                        "r_total":         m["r_total"][-1]     if m["r_total"]     else 0,
+                        "goal_progress":   m["goal_progress"][-1] if m["goal_progress"] else 0,
+                        "beta":            self.ml_system.beta,
+                        "lr":              self.ml_system.optimizer.param_groups[0]["lr"],
+                        "gemini_interval": m["gemini_interval"][-1] if m["gemini_interval"] else 0,
+                    },
+                    gemini_event=gemini_event,
+                    scene=self._scene,
+                    goal=self.ml_system.current_goal,
+                    action_norm=act_arr,
+                    sigma=ml_result.get("sigma"),
+                    topdown=topdown,
+                    gemini_hires=self._last_gemini_image,
+                )
 
             # ── Overhead Map Update (jeden Step) ────────
             if self.overhead is not None:
-                try:
-                    self.overhead.update(
-                        action_ros2=self.action_sink.last_ros2 or {},
-                        scene=self._scene,
-                        gemini_event=gemini_event,
-                    )
-                except Exception as _e:
-                    import traceback
-                    print(f"  [FEHLER] overhead.update(): {_e}")
-                    traceback.print_exc()
+                self.overhead.update(
+                    action_ros2=self.action_sink.last_ros2 or {},
+                    scene=self._scene,
+                    gemini_event=gemini_event,
+                )
 
             obs = next_obs
             step += 1

@@ -176,12 +176,6 @@ class TrainingDashboard:
         self._last_scene = scene
         slow_update = (self._step % 10 == 0) or (self._step == 1)
 
-        if self._step <= 5 or self._step % 50 == 0:
-            print(f"  [Dashboard] update() step={self._step}, "
-                  f"id={id(self):#x}, "
-                  f"hist_fe_len={len(self.hist['fe'])}, "
-                  f"hist_id={id(self.hist):#x}")
-
         # Gemini-Hochreis-Bild speichern
         if gemini_hires is not None:
             self._last_gemini_img = gemini_hires
@@ -190,9 +184,6 @@ class TrainingDashboard:
         for k, v in metrics.items():
             if k in self.hist:
                 self.hist[k].append(float(v))
-
-        if self._step <= 5 or self._step % 50 == 0:
-            print(f"  [Dashboard] AFTER append: hist_fe_len={len(self.hist['fe'])}")
 
         # pred auf obs-Größe skalieren falls nötig (z.B. 16×16 → 60×80)
         obs_h, obs_w = obs.shape[:2]
