@@ -429,7 +429,8 @@ class OverheadMapView:
 
         # ── Kamera-Sichtfeld (Kegel) ───────────────────
         fov_angle = np.radians(60)   # 60° Kamera-FOV
-        cam_dir   = self.pose.heading - self.cam_pan_rad  # positive pan = rechts = CW
+        # positive pan = rechts = CW, normalisiert auf [0, 2π]
+        cam_dir   = (self.pose.heading - self.cam_pan_rad) % (2 * np.pi)
         cone_len  = 1.2
         left_ang  = cam_dir + fov_angle/2
         right_ang = cam_dir - fov_angle/2
