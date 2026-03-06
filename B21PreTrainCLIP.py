@@ -14,7 +14,7 @@ Vorgehen:
     2. Auto-Labels erzeugen (Farb-Heuristik: red/green/blue/wall/empty)
     3. CLIP Text-Encoder liefert Goal-Embeddings (512-dim)
     4. Encoder liefert Latent-Vektoren (64-dim) für jeden Frame
-    5. goal_proj (512→64) wird trainiert:
+    5. goal_proj (512→128→ReLU→64) wird trainiert:
        Contrastive Loss: passende Paare (label, frame) → nahe Vektoren
 
     python B21PreTrainCLIP.py
@@ -24,6 +24,7 @@ Vorgehen:
 import os
 import sys
 import time
+import math
 import argparse
 import numpy as np
 
@@ -510,11 +511,11 @@ class LabeledFrameDataset(Dataset):
 
 def pretrain_clip(
         encoder: Encoder,
-        goal_proj: nn.Linear,
+        goal_proj: nn.Module,
         clip_encoder: ClipTextEncoder,
         dataset: LabeledFrameDataset,
-        epochs: int = 30,
-        batch_size: int = 32,
+        epochs: int = 100,
+        batch_size: int = 64,
         lr: float = 5e-4,
         temperature: float = 0.07,
 ):
@@ -528,13 +529,24 @@ def pretrain_clip(
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                         drop_last=True)
 
-    # Nur goal_proj wird trainiert, Encoder ist eingefroren
-    encoder.eval()
-    for p in encoder.parameters():
-        p.requires_grad = False
+    # Encoder: Conv-Layer einfrieren, FC-Layer (fc_mu, fc_log_var) mittrainieren
+    for name, p in encoder.named_parameters():
+        if name.startswith("fc_"):
+            p.requires_grad = True
+        else:
+            p.requires_grad = False
+    encoder.train()
 
-    optimizer = torch.optim.AdamW(goal_proj.parameters(), lr=lr,
-                                   weight_decay=1e-4)
+    # Learnable Temperature (log-Skala für Stabilität)
+    log_temp = torch.nn.Parameter(torch.tensor(math.log(temperature)))
+
+    # Separate LR: goal_proj normal, Encoder-FC 10x kleiner
+    encoder_fc_params = [p for n, p in encoder.named_parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW([
+        {"params": goal_proj.parameters(), "lr": lr},
+        {"params": encoder_fc_params, "lr": lr * 0.1},
+        {"params": [log_temp], "lr": lr},
+    ], weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs, eta_min=lr * 0.01
     )
@@ -545,11 +557,19 @@ def pretrain_clip(
         vec = clip_encoder.encode_text(desc)  # np.ndarray (512,)
         text_cache[desc] = torch.from_numpy(vec)
 
+    # Alle Label-Text-Embeddings als Tensor (für Klassifikation)
+    all_descs = list(LABEL_DESCRIPTIONS.values())
+    all_text_embs = torch.stack([text_cache[d] for d in all_descs], dim=0)  # (K, 512)
+    label_to_id = {d: i for i, d in enumerate(all_descs)}
+
+    n_enc_fc = sum(p.numel() for p in encoder_fc_params)
     print(f"\nPre-Training CLIP Goal-Projektion")
     print(f"  goal_proj:  {sum(p.numel() for p in goal_proj.parameters()):,} Parameter")
+    print(f"  encoder FC: {n_enc_fc:,} Parameter (mittrainiert, LR×0.1)")
     print(f"  Dataset:    {len(dataset)} Frames")
     print(f"  Epochen:    {epochs}")
     print(f"  Temperatur: {temperature}")
+    print(f"  Klassen:    {len(all_descs)}")
     print()
 
     best_loss = float('inf')
@@ -558,42 +578,46 @@ def pretrain_clip(
     for epoch in range(epochs):
         goal_proj.train()
         epoch_loss = 0.0
+        epoch_correct = 0
+        epoch_total = 0
         n_batches  = 0
 
         for batch_imgs, batch_labels, batch_descs in loader:
             # batch_imgs: (B, 3, 128, 128)
-            with torch.no_grad():
-                mu, log_var, z = encoder(batch_imgs)
-                z_norm = F.normalize(z, dim=-1)  # (B, 64)
+            mu, log_var, z = encoder(batch_imgs)
+            z_norm = F.normalize(z, dim=-1)  # (B, 64)
 
-            # Text-Embeddings aus Cache
-            text_embs = torch.stack(
-                [text_cache[d] for d in batch_descs], dim=0
-            )  # (B, 512)
+            # Alle K Label-Projektionen berechnen
+            all_proj = goal_proj(all_text_embs)             # (K, 64)
+            all_proj_norm = F.normalize(all_proj, dim=-1)   # (K, 64)
 
-            # Projizieren
-            goal_latent = goal_proj(text_embs)  # (B, 64)
-            goal_norm = F.normalize(goal_latent, dim=-1)  # (B, 64)
+            # Learnable Temperature (geclampt auf [0.05, 1.0])
+            temp = torch.clamp(log_temp.exp(), 0.05, 1.0)
 
-            # InfoNCE Loss (Cosine Similarity Matrix)
-            sim = torch.matmul(goal_norm, z_norm.T) / temperature  # (B, B)
-            targets = torch.arange(batch_size)  # Diagonale = positive Paare
+            # Klassifikations-Logits: jedes z gegen alle K Labels
+            logits = torch.matmul(z_norm, all_proj_norm.T) / temp  # (B, K)
 
-            # Symmetrischer Loss
-            loss_g2z = F.cross_entropy(sim, targets)
-            loss_z2g = F.cross_entropy(sim.T, targets)
-            loss = (loss_g2z + loss_z2g) / 2
+            # Targets: korrektes Label-ID pro Sample
+            targets = torch.tensor(
+                [label_to_id[d] for d in batch_descs], dtype=torch.long
+            )
+
+            loss = F.cross_entropy(logits, targets)
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(goal_proj.parameters(), 1.0)
+            all_params = list(goal_proj.parameters()) + encoder_fc_params + [log_temp]
+            torch.nn.utils.clip_grad_norm_(all_params, 1.0)
             optimizer.step()
 
             epoch_loss += loss.item()
+            epoch_correct += (logits.argmax(dim=1) == targets).sum().item()
+            epoch_total += targets.shape[0]
             n_batches  += 1
 
         scheduler.step()
         avg_loss = epoch_loss / n_batches
+        accuracy = epoch_correct / epoch_total * 100
 
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -603,8 +627,11 @@ def pretrain_clip(
 
         if (epoch + 1) % 5 == 0 or epoch == 0 or epoch == epochs - 1:
             elapsed = time.time() - t_start
+            cur_temp = torch.clamp(log_temp.exp(), 0.01, 1.0).item()
             print(f"  Epoch {epoch+1:3d}/{epochs}  |  "
                   f"Loss: {avg_loss:.5f}  "
+                  f"Acc: {accuracy:5.1f}%  "
+                  f"τ: {cur_temp:.3f}  "
                   f"LR: {scheduler.get_last_lr()[0]:.2e}  "
                   f"({elapsed:.0f}s){marker}")
 
@@ -658,7 +685,7 @@ def main():
         help="Anzahl Frames"
     )
     parser.add_argument(
-        "--epochs", type=int, default=30,
+        "--epochs", type=int, default=100,
         help="Trainings-Epochen"
     )
     args = parser.parse_args()
@@ -670,7 +697,11 @@ def main():
 
     # ── Modelle erstellen ──────────────────────────────
     encoder = Encoder()
-    goal_proj = nn.Linear(512, LATENT_DIM, bias=False)
+    goal_proj = nn.Sequential(
+        nn.Linear(512, 128),
+        nn.ReLU(),
+        nn.Linear(128, LATENT_DIM),
+    )
 
     # ── Checkpoint laden (Encoder + ggf. goal_proj) ────
     try:
@@ -680,8 +711,11 @@ def main():
         encoder.load_state_dict(ckpt["encoder"])
         print("  Encoder geladen ✓")
         if "goal_proj" in ckpt and ckpt["goal_proj"] is not None:
-            goal_proj.load_state_dict(ckpt["goal_proj"])
-            print("  goal_proj geladen ✓ (Nachtraining)")
+            try:
+                goal_proj.load_state_dict(ckpt["goal_proj"])
+                print("  goal_proj geladen ✓ (Nachtraining)")
+            except RuntimeError:
+                print("  goal_proj Architektur geändert → frisch initialisiert")
         print()
     except FileNotFoundError:
         print("WARNUNG: Kein Checkpoint gefunden!")
