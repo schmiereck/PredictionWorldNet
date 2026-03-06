@@ -727,6 +727,19 @@ def main():
     checkpoint["current_goal"] = "pretrain_clip"
     checkpoint["result_clip"]  = result
 
+    # Rohe CLIP Text-Embeddings aller Labels speichern (512-dim, float32).
+    # Werden zur Laufzeit (B19) mit goal_proj projiziert → Erkennung ohne CLIP.
+    # Roh gespeichert (nicht projiziert), damit Verbesserungen von goal_proj
+    # während des RL-Trainings sofort in der Erkennung sichtbar sind.
+    print("  Speichere CLIP Label-Embeddings (für Laufzeit-Erkennung)...")
+    label_clip_embs = {}
+    with torch.no_grad():
+        for lbl, desc in LABEL_DESCRIPTIONS.items():
+            emb_np = clip_encoder.encode_text(desc)          # np.ndarray (512,)
+            label_clip_embs[lbl] = torch.from_numpy(emb_np).float()
+    checkpoint["label_clip_embeddings"] = label_clip_embs
+    print(f"    {len(label_clip_embs)} Labels: {list(label_clip_embs.keys())}")
+
     torch.save(checkpoint, ckpt_path)
 
     print(f"\n  Checkpoint gespeichert: {ckpt_path}")

@@ -129,13 +129,14 @@ class TrainingDashboard:
         self.ax_rewards = self.fig.add_subplot(gs[1, 2:4])
         self.ax_latent  = self.fig.add_subplot(gs[1, 4:6])
 
-        # ── Zeile 2: Gemini + Progress + Stats ────────
+        # ── Zeile 2: Gemini + Progress + Stats + Erkennung ─
         self.ax_gemini  = self.fig.add_subplot(gs[2, :2])
         self.ax_prog    = self.fig.add_subplot(gs[2, 2:4])
-        self.ax_stats   = self.fig.add_subplot(gs[2, 4:6])
+        self.ax_stats   = self.fig.add_subplot(gs[2, 4])
+        self.ax_recog   = self.fig.add_subplot(gs[2, 5])
 
         for ax in [self.ax_fe, self.ax_rewards, self.ax_latent,
-                   self.ax_gemini, self.ax_prog, self.ax_stats]:
+                   self.ax_gemini, self.ax_prog, self.ax_stats, self.ax_recog]:
             ax.set_facecolor('#111111')
             ax.tick_params(colors='white')
 
@@ -149,17 +150,18 @@ class TrainingDashboard:
 
     def update(
             self,
-            obs:           np.ndarray,           # (H,W,3) uint8
-            pred:          np.ndarray,           # (H,W,3) float [0,1]
-            metrics:       dict,
-            gemini_event:  dict       = None,
-            latent_z:      np.ndarray = None,
-            scene:         str        = "",
-            goal:          str        = "",
-            action_norm:   np.ndarray = None,
-            sigma:         np.ndarray = None,
-            topdown:       np.ndarray = None,    # (H,W,3) Top-Down Karte optional
-            gemini_hires:  np.ndarray = None,    # (H,W,3) letztes Bild an Gemini
+            obs:                 np.ndarray,           # (H,W,3) uint8
+            pred:                np.ndarray,           # (H,W,3) float [0,1]
+            metrics:             dict,
+            gemini_event:        dict       = None,
+            latent_z:            np.ndarray = None,
+            scene:               str        = "",
+            goal:                str        = "",
+            action_norm:         np.ndarray = None,
+            sigma:               np.ndarray = None,
+            topdown:             np.ndarray = None,    # (H,W,3) Top-Down Karte optional
+            gemini_hires:        np.ndarray = None,    # (H,W,3) letztes Bild an Gemini
+            recognition_scores:  dict       = None,    # {label: float [0,1]}
     ):
         """
         Aktualisiert das Dashboard (volle Metriken).
@@ -583,6 +585,52 @@ class TrainingDashboard:
                 fontfamily='monospace', color='white',
                 bbox=dict(boxstyle='round', facecolor='#1a1a2e', alpha=0.9)
             )
+
+            # ── NN-Erkennung (Balkendiagramm) ──────────────
+            self.ax_recog.clear()
+            self.ax_recog.set_facecolor('#111111')
+            if recognition_scores:
+                # Nach Score absteigend sortieren
+                sorted_items = sorted(
+                    recognition_scores.items(), key=lambda x: x[1], reverse=True
+                )
+                lbls   = [item[0] for item in sorted_items]
+                scores = [item[1] for item in sorted_items]
+                # Farben: bestes Label hervorgehoben, Rest gedimmt
+                bar_colors = [
+                    '#44ee88' if i == 0 else '#3a3a5e'
+                    for i in range(len(lbls))
+                ]
+                bars = self.ax_recog.barh(
+                    lbls, scores, color=bar_colors, height=0.65
+                )
+                self.ax_recog.set_xlim(0, 1.0)
+                # Score-Label an jedem Balken
+                for bar, sc in zip(bars, scores):
+                    self.ax_recog.text(
+                        min(sc + 0.03, 0.97),
+                        bar.get_y() + bar.get_height() / 2,
+                        f'{sc:.2f}',
+                        va='center', fontsize=6.5, color='white'
+                    )
+                self.ax_recog.invert_yaxis()   # bestes Label oben
+                self.ax_recog.set_title(
+                    f'NN Erkennung  →  {lbls[0]}',
+                    fontsize=8, color='#44ee88', fontweight='bold'
+                )
+            else:
+                self.ax_recog.text(
+                    0.5, 0.5,
+                    'Keine Label-Embeddings\n(B21 ausführen)',
+                    ha='center', va='center',
+                    color='gray', fontsize=8,
+                    transform=self.ax_recog.transAxes
+                )
+                self.ax_recog.set_title(
+                    'NN Erkennung', fontsize=8, color='gray'
+                )
+            self.ax_recog.tick_params(colors='white', labelsize=7)
+            self.ax_recog.set_facecolor('#111111')
 
         # ── Immer: figure rendern ──────────────────
         self.fig.canvas.draw_idle()

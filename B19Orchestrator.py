@@ -395,6 +395,9 @@ class Orchestrator:
         self.overhead     = None
         self.gemini       = None
 
+        # CLIP Label-Embeddings für Laufzeit-Erkennung (aus B21-Checkpoint)
+        self._label_clip_embs = None
+
         # Strategie-System (B22+B23)
         self.strategy_gen  = None
         self.strategy_exec = None
@@ -479,6 +482,19 @@ class Orchestrator:
                 load_optimizer=self.cfg.get("load_optimizer", False),
                 strict=self.cfg.get("strict_load", False),
             )
+            # CLIP Label-Embeddings laden (aus B21-Checkpoint)
+            try:
+                import torch as _torch
+                raw_ckpt = _torch.load(ckpt_path, weights_only=False)
+                embs = raw_ckpt.get("label_clip_embeddings", None)
+                if embs is not None:
+                    device = next(self.ml_system.encoder.parameters()).device
+                    self._label_clip_embs = {k: v.to(device) for k, v in embs.items()}
+                    print(f"  Label-Embeddings: {list(self._label_clip_embs.keys())}")
+                else:
+                    print("  Label-Embeddings: nicht im Checkpoint (B21 erneut ausführen)")
+            except Exception as _e:
+                print(f"  Label-Embeddings: Fehler beim Laden ({_e})")
         print()
 
         # ── Dashboard (B18) ────────────────────────────
@@ -712,6 +728,26 @@ class Orchestrator:
                     topdown     = None
 
                 m = self.ml_system.metrics
+
+                # ── NN-Erkennung: cos_sim(z, goal_proj(label_emb)) ──────────
+                recognition_scores = None
+                z_np = ml_result.get("latent_z")
+                if self._label_clip_embs is not None and z_np is not None:
+                    try:
+                        import torch as _torch
+                        import torch.nn.functional as _F
+                        device = next(self.ml_system.goal_proj.parameters()).device
+                        z_t = _torch.from_numpy(z_np).float().unsqueeze(0).to(device)
+                        recognition_scores = {}
+                        with _torch.no_grad():
+                            for lbl, emb_512 in self._label_clip_embs.items():
+                                proj = self.ml_system.goal_proj(
+                                    emb_512.unsqueeze(0))          # (1, 64)
+                                sim  = _F.cosine_similarity(z_t, proj).item()
+                                recognition_scores[lbl] = (sim + 1.0) / 2.0  # [-1,1] → [0,1]
+                    except Exception as _e:
+                        recognition_scores = None
+
                 self.dashboard.update(
                     obs=display_obs,
                     pred=ml_result["pred_obs"],
@@ -735,6 +771,7 @@ class Orchestrator:
                     sigma=ml_result.get("sigma"),
                     topdown=topdown,
                     gemini_hires=self._last_gemini_image,
+                    recognition_scores=recognition_scores,
                 )
 
             # ── Overhead Map Update (jeden Step) ────────
