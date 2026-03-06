@@ -96,16 +96,126 @@ def _register_prediction_world_env(gym):
 
 
 # ─────────────────────────────────────────────
-# AUTO-LABELING (Farb-Heuristik)
+# ENTITY-BASIERTES LABELING (primär)
+# ─────────────────────────────────────────────
+
+_KNOWN_COLORS = ("red", "green", "blue", "yellow", "orange", "white")
+
+
+def _entity_color_name(ent) -> str | None:
+    """
+    Gibt den Farbnamen einer MiniWorld-Entity zurück.
+    Box: ent.color ist ein String → direkt lesen.
+    Ball: kein .color-Attribut → Farbe aus ObjMesh-Cache-Key extrahieren
+          (Dateiname: ball_{color}.obj).
+    """
+    # Box / Key / etc.: .color ist ein String
+    if hasattr(ent, 'color') and isinstance(ent.color, str):
+        return ent.color if ent.color in _KNOWN_COLORS else None
+
+    # Ball: Mesh-Dateiname enthält die Farbe als "ball_{color}.obj"
+    if hasattr(ent, 'mesh') and ent.mesh is not None:
+        try:
+            import os, re
+            from miniworld.objmesh import ObjMesh
+            for k, v in ObjMesh.cache.items():
+                if v is ent.mesh:
+                    base = os.path.basename(k).lower()   # z.B. "ball_green.obj"
+                    m = re.match(r'ball_([a-z]+)\.obj$', base)
+                    if m and m.group(1) in _KNOWN_COLORS:
+                        return m.group(1)
+                    break  # Mesh gefunden – kein weiterer Treffer möglich
+        except Exception:
+            pass
+    return None
+
+
+def _entity_label(ent) -> str | None:
+    """Gibt das CLIP-Label für eine Entity zurück (Farbe)."""
+    color = _entity_color_name(ent)
+    return color if color and color in _KNOWN_COLORS else None
+
+
+# FOV = 60° (identisch zu OverheadMapView)
+_FOV_DEG = 60.0
+
+
+def _visual_radius(ent) -> float:
+    """
+    Gibt den visuell relevanten Radius einer Entity zurück.
+    Box: ent.radius ist die 3D-Diagonale (zu groß für FOV-Berechnung).
+         Korrektur auf visuelle Halbbreite = height/2 (Würfelseite).
+    Ball: ent.radius ist der echte Kugelradius → direkt verwenden.
+    """
+    if 'box' in type(ent).__name__.lower():
+        return ent.height / 2.0   # Würfel: Halbseite = height/2 ≈ 0.4
+    return ent.radius              # Kugel: Kugelradius ≈ 0.43
+
+
+def _visible_entities_in_fov(uw, fov_deg: float = _FOV_DEG,
+                              max_coverage_box: float = 0.85,
+                              max_coverage_ball: float = 0.65) -> list:
+    """
+    Gibt alle farbigen Nicht-Agent-Entities zurück, die sich aktuell im
+    Kamera-FOV des Agenten befinden, sortiert nach Distanz (nächste zuerst).
+
+    Separate Schwellwerte für Box und Ball, weil ihre Radien sich unterscheiden:
+      Box  (r_visual≈0.40): max_coverage_box=0.85  → d_min ≈ 0.84 m
+      Ball (r_visual≈0.43): max_coverage_ball=0.65 → d_min ≈ 1.21 m
+
+    Herleitung:  d_min = r_visual / tan(max_coverage · fov/2)
+
+    Koordinaten: agent.dir wächst CCW; Vorwärtsvektor = (cos(dir), 0, -sin(dir)).
+    FOV-Check: Winkel zwischen Blickrichtung und Richtung zum Objekt ≤ half_fov.
+    """
+    agent_pos = uw.agent.pos
+    agent_dir = uw.agent.dir
+    half_fov  = np.radians(fov_deg / 2.0)
+
+    visible = []
+    for ent in uw.entities:
+        if type(ent).__name__ == 'Agent':
+            continue
+        if not hasattr(ent, 'pos'):
+            continue
+        label = _entity_label(ent)
+        if label is None:
+            continue
+
+        dx = ent.pos[0] - agent_pos[0]
+        dz = ent.pos[2] - agent_pos[2]
+        dist = np.sqrt(dx * dx + dz * dz)
+
+        if dist < 1e-6:
+            continue
+
+        # Per-Typ Schwellwert
+        is_ball   = 'ball' in type(ent).__name__.lower()
+        coverage  = max_coverage_ball if is_ball else max_coverage_box
+        max_ang_h = np.radians(fov_deg * coverage / 2.0)
+
+        if np.arctan2(_visual_radius(ent), dist) > max_ang_h:
+            continue  # zu nah – füllt Frame zu stark
+
+        angle_to = np.arctan2(-dz, dx)
+        diff = (angle_to - agent_dir + np.pi) % (2.0 * np.pi) - np.pi
+        if abs(diff) <= half_fov:
+            visible.append((ent, label, dist))
+
+    return sorted(visible, key=lambda x: x[2])
+
+
+# ─────────────────────────────────────────────
+# AUTO-LABELING (Farb-Heuristik – Fallback)
 # ─────────────────────────────────────────────
 
 LABEL_DESCRIPTIONS = {
     "red":    "a red box in the scene",
-    "green":  "a green ball or green sphere in the scene",
-    "blue":   "a blue ball or blue sphere in the scene",
+    "green":  "a green ball in the scene",
+    "blue":   "a blue ball in the scene",
     "yellow": "a yellow box in the scene",
     "orange": "an orange box in the scene",
-    "white":  "a white box or bright object in the scene",
+    "white":  "a white box in the scene",
     "wall":   "a plain wall or corridor with no objects",
     "empty":  "an empty room with nothing interesting",
 }
@@ -172,7 +282,8 @@ class LabeledFrameDataset(Dataset):
 
     def _collect_miniworld(self, n_frames, env_name):
         print(f"Sammle {n_frames} gelabelte Frames aus {env_name}...")
-        print(f"  (50% gezielt auf Objekte gerichtet)")
+        print(f"  Phase 1 (50%): gezielt auf Objekt – Entity-Label (ground truth)")
+        print(f"  Phase 2 (50%): zufällig     – FOV-sichtbarstes Objekt oder wall/empty")
         try:
             import gymnasium as gym
             import miniworld  # noqa: F401
@@ -187,60 +298,81 @@ class LabeledFrameDataset(Dataset):
             n_targeted = n_frames // 2
             n_random   = n_frames - n_targeted
 
-            # Phase 1: Gezielte Frames auf Objekte (Agent → Objekt ausrichten)
+            # ── Phase 1: Gezielt auf einzelnes Objekt ausrichten ──────────────
+            # Label kommt direkt vom Entity (nicht vom Pixel-Heuristik).
             for i in range(n_targeted):
                 obs, _ = env.reset()
                 uw = env.unwrapped
 
-                # Farbiges Objekt suchen (Box, Ball, Key, ...)
-                colored = [e for e in uw.entities
-                           if hasattr(e, 'color') and e.color is not None
-                           and type(e).__name__ != 'Agent']
+                # Alle farbigen Entities sammeln
+                colored = [(e, _entity_label(e)) for e in uw.entities
+                           if type(e).__name__ != 'Agent'
+                           and _entity_label(e) is not None]
+
+                label = None
+                target_label = None
                 if colored:
-                    target = colored[np.random.randint(len(colored))]
-                    # Agent auf Objekt ausrichten
+                    target, target_label = colored[np.random.randint(len(colored))]
+                    # Agent exakt auf Ziel ausrichten
                     dx = target.pos[0] - uw.agent.pos[0]
                     dz = target.pos[2] - uw.agent.pos[2]
                     uw.agent.dir = np.arctan2(-dz, dx)
                     # Ein paar Schritte vorwärts (näher zum Objekt)
                     for _ in range(np.random.randint(0, 8)):
-                        obs, _, term, trunc, _ = env.step(2)  # vorwärts
+                        obs, _, term, trunc, _ = env.step(2)
                         if term or trunc:
                             break
-                    # Leichte Variation im Blickwinkel
-                    uw.agent.dir += np.random.uniform(-0.3, 0.3)
-                    obs = env.unwrapped.render_obs()
+                    # Kleine Blickwinkel-Variation (Objekt bleibt im FOV)
+                    uw.agent.dir += np.random.uniform(-0.25, 0.25)
+                    obs = uw.render_obs()
+
+                    # Label = nächstes Objekt im FOV (nicht das Ziel-Entity!).
+                    # Nach Vorwärtsgehen kann ein anderes Objekt näher sein.
+                    visible = _visible_entities_in_fov(uw)
+                    if visible:
+                        label = visible[0][1]   # nächstes sichtbares Objekt
+                    else:
+                        label = target_label    # Fallback: Ziel außerhalb FOV
 
                 img = np.array(
                     PILImage.fromarray(obs).resize((128, 128), PILImage.BILINEAR),
                     dtype=np.uint8
                 )
                 self.frames.append(img)
-                self.labels.append(classify_frame(img))
+                # Fallback: kein Objekt gefunden → Pixel-Heuristik (wall/empty)
+                self.labels.append(label if label else classify_frame(img))
 
                 if (i + 1) % 500 == 0:
                     print(f"  {i+1}/{n_frames} Frames (gezielt)")
 
-            # Phase 2: Zufällige Exploration (Wände, leere Bereiche)
+            # ── Phase 2: Zufällige Exploration ────────────────────────────────
+            # Label = nähestes Objekt im FOV → sonst wall/empty per Pixel-Heuristik.
             obs, _ = env.reset()
+            uw = env.unwrapped
             for i in range(n_random):
                 action = env.action_space.sample()
-                obs, reward, terminated, truncated, info = env.step(action)
+                obs, _, terminated, truncated, _ = env.step(action)
                 if terminated or truncated:
                     obs, _ = env.reset()
+                    uw = env.unwrapped
 
                 img = np.array(
                     PILImage.fromarray(obs).resize((128, 128), PILImage.BILINEAR),
                     dtype=np.uint8
                 )
+
+                # FOV-basiertes Label: nähestes sichtbares Objekt
+                visible = _visible_entities_in_fov(uw)
+                if visible:
+                    label = visible[0][1]  # Label des nächsten Objekts im FOV
+                else:
+                    label = classify_frame(img)  # wall / empty Fallback
+
                 self.frames.append(img)
-                self.labels.append(classify_frame(img))
+                self.labels.append(label)
 
                 if (n_targeted + i + 1) % 500 == 0:
                     print(f"  {n_targeted+i+1}/{n_frames} Frames (zufällig)")
-
-                if (i + 1) % 500 == 0:
-                    print(f"  {i+1}/{n_frames} Frames")
 
             env.close()
         except ImportError:

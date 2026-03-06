@@ -238,17 +238,16 @@ class OverheadMapView:
                             int(c[2] * 255) if c[2] <= 1 else int(c[2]),
                         )
                     if ent_color == '#ffffff' and hasattr(ent, 'mesh'):
-                        # mesh_name nicht immer als Attribut vorhanden,
-                        # deshalb ObjMesh.cache durchsuchen
+                        # Ball hat kein .color-Attribut.
+                        # Farbe aus ObjMesh-Cache-Key extrahieren: "ball_{color}.obj"
+                        import os, re
                         from miniworld.objmesh import ObjMesh
-                        mesh_key = ''
                         for k, v in ObjMesh.cache.items():
                             if v is ent.mesh:
-                                mesh_key = k
-                                break
-                        for cname, chex in _mw_colors.items():
-                            if cname in mesh_key:
-                                ent_color = chex
+                                base = os.path.basename(k).lower()
+                                m_re = re.match(r'ball_([a-z]+)\.obj$', base)
+                                if m_re:
+                                    ent_color = _mw_colors.get(m_re.group(1), ent_color)
                                 break
                 except Exception:
                     pass
