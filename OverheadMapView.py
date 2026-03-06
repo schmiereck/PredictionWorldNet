@@ -117,7 +117,7 @@ class OverheadMapView:
         self.title        = title
         self.pose         = RobotPose(x=0.0, y=0.0, heading=np.pi/2)
         self.trail        = deque(maxlen=trail_length)
-        self.gemini_pts   = deque(maxlen=50)
+        self.gemini_pts   = deque(maxlen=15)   # Nur letzte 15 Calls anzeigen
         self.scene_visits = deque(maxlen=500)  # (x,y,scene)
         self.fig          = None
         self.ax           = None
@@ -571,10 +571,11 @@ class OverheadMapView:
         self.fig.canvas.flush_events()
 
     def clear_trail(self):
-        """Löscht den Trail (z.B. beim Szenenwechsel)."""
+        """Löscht den Trail und Gemini-Markierungen (z.B. beim Szenenwechsel)."""
         self.trail.clear()
         self.scene_visits.clear()
-        print("[OverheadMap] Trail gelöscht")
+        self.gemini_pts.clear()
+        print("[OverheadMap] Trail + Gemini-Calls gelöscht")
 
     def close(self):
         try:
