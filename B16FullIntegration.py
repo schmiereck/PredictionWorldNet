@@ -583,6 +583,7 @@ class IntegratedSystem:
         self.last_gemini_result = {}
         self.total_steps        = 0
         self.train_steps        = 0
+        self._label_clip_embeddings = None  # wird aus Checkpoint geladen
 
     def set_goal(self, user_cmd: str):
         """Neues Ziel via Gemini Text-Interface (B13)."""
@@ -639,6 +640,9 @@ class IntegratedSystem:
             },
             "tag":          tag,
         }
+        # label_clip_embeddings durchreichen (aus B21)
+        if self._label_clip_embeddings is not None:
+            checkpoint["label_clip_embeddings"] = self._label_clip_embeddings
         torch.save(checkpoint, path)
         print(f"  Checkpoint gespeichert: {path}")
         print(f"    Tag: {tag or '(ohne)'}  |  "
@@ -708,6 +712,10 @@ class IntegratedSystem:
             self.total_steps = checkpoint["total_steps"]
             self.train_steps = checkpoint.get("train_steps", 0)
             self.beta        = checkpoint.get("beta", 0.0)
+
+        # label_clip_embeddings durchreichen (aus B21)
+        if "label_clip_embeddings" in checkpoint:
+            self._label_clip_embeddings = checkpoint["label_clip_embeddings"]
 
         tag   = checkpoint.get("tag", "")
         steps = checkpoint.get("total_steps", 0)

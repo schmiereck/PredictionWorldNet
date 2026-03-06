@@ -255,8 +255,7 @@ class MiniWorldObsSource(_b17.ObservationSource):
         """
         agent = self._env.unwrapped.agent
         original_dir = agent.dir
-        # Positive pan = nach rechts, normalisiert auf [0, 2π]
-        agent.dir = (original_dir - self._cam_pan) % (2 * np.pi)
+        agent.dir = original_dir - self._cam_pan  # positive pan = nach rechts
         obs = self._env.unwrapped.render_obs()
         agent.dir = original_dir
         return obs

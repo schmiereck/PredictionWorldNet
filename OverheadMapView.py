@@ -535,10 +535,10 @@ class OverheadMapView:
         self.ax_rot.clear()
         self.ax_rot.set_facecolor('#111111')
         if len(self.trail) >= 2:
-            self.ax_rot.plot(
-                [t[2] * 180 / np.pi for t in self.trail],
-                color='mediumpurple', linewidth=1.5
-            )
+            # unwrap verhindert Sprünge bei 0°/360° Übergang
+            raw_rad = np.array([t[2] for t in self.trail])
+            unwrapped = np.unwrap(raw_rad) * 180 / np.pi
+            self.ax_rot.plot(unwrapped, color='mediumpurple', linewidth=1.5)
         heading_deg = (self.pose.heading * 180 / np.pi) % 360
         self.ax_rot.set_title(f'Heading: {heading_deg:.0f}°',
                               fontsize=8, color='white')
