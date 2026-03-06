@@ -287,6 +287,9 @@ class StrategyExecutor:
         # Laufende Aktion fortsetzen?
         if self._remaining_steps > 0:
             self._remaining_steps -= 1
+            # Spezialbehandlung: scan_panorama ist eine Sequenz
+            if self._current_action_name == "scan_panorama":
+                return self._compute_scan_panorama_action()
             return self._current_action_vec.copy()
 
         # Conditions auswerten
@@ -322,6 +325,37 @@ class StrategyExecutor:
                 return vec.copy()
 
         return None  # Keine Regel hat gepasst → NN entscheidet
+
+    def _compute_scan_panorama_action(self) -> np.ndarray:
+        """
+        Berechnet scan_panorama als Full Sweep: links → Mitte → rechts → Mitte.
+
+        Duration: 16 Steps
+        - Steps 0-4:   Links schwenken (cam_pan = -0.7)
+        - Steps 5-7:   Zurück zur Mitte (cam_pan = +0.7)
+        - Steps 8-12:  Rechts schwenken (cam_pan = +0.7)
+        - Steps 13-15: Zurück zur Mitte (cam_pan = -0.7)
+
+        Resultat: Kamera oszilliert von -70° bis +70° und endet bei 0°
+        """
+        # Aktueller Step in der Sequenz (0 = Start, 15 = Ende)
+        total_duration = 16
+        current_step = total_duration - 1 - self._remaining_steps
+
+        if current_step < 5:
+            # Phase 1: Links schwenken bis ca. -70°
+            cam_pan = -0.7
+        elif current_step < 8:
+            # Phase 2: Zurück zur Mitte (0°)
+            cam_pan = 0.7
+        elif current_step < 13:
+            # Phase 3: Rechts schwenken bis ca. +70°
+            cam_pan = 0.7
+        else:
+            # Phase 4: Zurück zur Mitte (0°)
+            cam_pan = -0.7
+
+        return np.array([0.0, 0.0, cam_pan, 0.0, 0.0, 0.0], dtype=np.float32)
 
     def blend(self, strategy_action: np.ndarray,
               nn_action: np.ndarray,

@@ -175,14 +175,16 @@ class MockStrategyGenerator(StrategyGenerator):
             Rule("target_left",     "turn_left",     duration=3, priority=80),
             # Ziel rechts → nach rechts drehen
             Rule("target_right",    "turn_right",    duration=3, priority=80),
-            # Nichts sichtbar → Kamera schwenken (scannen)
-            Rule("no_target",       "scan_panorama", duration=8, priority=50),
-            # Kamera-Schwenk fertig, nichts gefunden → Roboter drehen
-            Rule("pan_done",        "turn_left",     duration=5, priority=40),
+            # Nichts sichtbar → Kamera schwenken (kompletter Sweep: links→rechts→mitte)
+            Rule("no_target",       "scan_panorama", duration=16, priority=50),
+            # Kamera-Schwenk fertig → erst Kamera zentrieren
+            Rule("pan_done",        "center_camera", duration=3, priority=45),
             # Feststecken → rückwärts + drehen
             Rule("stuck",           "move_backward", duration=3, priority=95),
             # Timeout → zufällig drehen
             Rule("timeout",         "random_turn",   duration=4, priority=30),
+            # Fallback: Wenn nichts anderes greift → Roboter langsam drehen
+            Rule("always",          "turn_left",     duration=5, priority=25),
         ]
 
         return Strategy(
