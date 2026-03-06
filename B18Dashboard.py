@@ -67,6 +67,7 @@ class TrainingDashboard:
             "r_intrinsic", "r_gemini", "r_total",
             "goal_progress", "pred_error",
             "gemini_interval", "beta", "lr",
+            "sigma_mean", "strategy_blend",
         ]}
 
         # Gemini-Events (Step + Inhalt)
@@ -81,6 +82,9 @@ class TrainingDashboard:
         self._last_pred = None
         self._last_goal = ""
         self._last_scene = ""
+
+        # Strategie-Info
+        self._last_strategy_rule = None
 
         # Imshow-Objekte für schnelles set_data() (kein clear() nötig)
         self._im_obs  = None
@@ -193,6 +197,17 @@ class TrainingDashboard:
         for k, v in metrics.items():
             if k in self.hist:
                 self.hist[k].append(float(v))
+
+        # Sigma-Mittelwert berechnen und speichern
+        if sigma is not None:
+            sigma_mean = float(np.mean(sigma))
+            self.hist["sigma_mean"].append(sigma_mean)
+
+        # Strategie-Info speichern
+        if "strategy_rule" in metrics:
+            self._last_strategy_rule = metrics["strategy_rule"]
+        if "strategy_blend" in metrics:
+            self.hist["strategy_blend"].append(float(metrics["strategy_blend"]))
 
         # pred auf obs-Größe skalieren falls nötig (z.B. 16×16 → 60×80)
         obs_h, obs_w = obs.shape[:2]
@@ -528,7 +543,7 @@ class TrainingDashboard:
             self.ax_gemini.legend(fontsize=6)
             self.ax_gemini.tick_params(colors='white')
 
-            # ── Goal Progress ──────────────────────────
+            # ── Goal Progress + Sigma + Strategy Blend ─
             self.ax_prog.clear()
             if self.hist["goal_progress"]:
                 prog = list(self.hist["goal_progress"])
@@ -539,12 +554,29 @@ class TrainingDashboard:
                 self.ax_prog.plot(steps_x, list(self.hist["pred_error"]),
                                   color='tomato', linewidth=1.2,
                                   alpha=0.7, label='Pred. Error')
+
+                # Sigma (NN-Unsicherheit)
+                if self.hist["sigma_mean"]:
+                    self.ax_prog.plot(steps_x[-len(self.hist["sigma_mean"]):],
+                                      list(self.hist["sigma_mean"]),
+                                      color='cyan', linewidth=1.3,
+                                      alpha=0.8, linestyle='--',
+                                      label='Sigma (NN-Unsicherheit)')
+
+                # Strategy Blend Factor (0 = nur NN, 1 = nur Strategie)
+                if self.hist["strategy_blend"]:
+                    self.ax_prog.plot(steps_x[-len(self.hist["strategy_blend"]):],
+                                      list(self.hist["strategy_blend"]),
+                                      color='magenta', linewidth=1.5,
+                                      alpha=0.9, linestyle=':',
+                                      label='Strategy Dominance')
+
                 self.ax_prog.axhline(1.0, color='gold', linestyle='--',
                                      linewidth=1, label='Ziel erreicht')
-            self.ax_prog.set_title('Goal Progress + Prediction Error',
+            self.ax_prog.set_title('Progress, Error, Sigma & Strategy',
                                    fontsize=9, color='white')
             self.ax_prog.set_ylim(0, 1.15)
-            self.ax_prog.legend(fontsize=6)
+            self.ax_prog.legend(fontsize=6, ncol=2)
             self.ax_prog.set_facecolor('#111111')
             self.ax_prog.tick_params(colors='white')
 
@@ -559,6 +591,21 @@ class TrainingDashboard:
             beta_now= list(self.hist["beta"])[-1]     if self.hist["beta"]    else 0
             gem_int = list(self.hist["gemini_interval"])[-1] \
                 if self.hist["gemini_interval"] else 0
+            sigma_now = list(self.hist["sigma_mean"])[-1] \
+                if self.hist["sigma_mean"] else 0
+            blend_now = list(self.hist["strategy_blend"])[-1] \
+                if self.hist["strategy_blend"] else 0
+
+            # Strategie-Info aufbereiten
+            strategy_lines = []
+            if self._last_strategy_rule:
+                strategy_lines = [
+                    "", "── Strategie ────────────",
+                    f"Rule:  {self._last_strategy_rule[:30]}",
+                    f"Blend: {blend_now:.2f}",
+                    f"{'  (Strategy)' if blend_now > 0.7 else '  (Mixed)' if blend_now > 0.3 else '  (NN)'}",
+                ]
+
             self.ax_stats.text(
                 0.03, 0.98,
                 "\n".join([
@@ -570,6 +617,9 @@ class TrainingDashboard:
                     f"Pred.Err:  {pe_now:.5f}",
                     f"Beta:      {beta_now:.4f}",
                     f"LR:        {lr_now:.2e}",
+                    "", "── Action ───────────────",
+                    f"Sigma:     {sigma_now:.3f}",
+                    *strategy_lines,
                     "", "── Rewards ──────────────",
                     f"Total:     {r_now:.4f}",
                     f"Gemini:    {list(self.hist['r_gemini'])[-1] if self.hist['r_gemini'] else 0:.4f}",
@@ -578,17 +628,9 @@ class TrainingDashboard:
                     f"Calls:     {len(self.gemini_events)}",
                     f"Interval:  {gem_int:.0f} Steps",
                     f"Ziel:      {goal[:25]}",
-                    "", "── Szene ────────────────",
-                    f"{scene}",
-                    "", "── Sync ─────────────────",
-                    "Dashboard: synchron",
-                    "→ was NN gerade sieht",
-                    "Gemini ER: adaptiv",
-                    f"→ letzter Call: Step",
-                    f"  {self.gemini_events[-1]['step'] if self.gemini_events else 0}",
                 ]),
                 transform=self.ax_stats.transAxes,
-                fontsize=7, verticalalignment='top',
+                fontsize=6.5, verticalalignment='top',
                 fontfamily='monospace', color='white',
                 bbox=dict(boxstyle='round', facecolor='#1a1a2e', alpha=0.9)
             )
@@ -879,6 +921,13 @@ def run_demo():
 
         # Dashboard nur alle UPDATE_EVERY Steps updaten
         if step % UPDATE_EVERY == 0 or step == N_STEPS-1:
+            # Simuliere Strategy Blend (oszilliert mit Sigma)
+            blend_factor = np.clip(
+                1.0 / (1.0 + np.exp(-(np.mean(sigma) - 0.4) * 8.0)),
+                0.1, 0.9
+            )
+            strategy_rule = "no_target → scan_panorama" if blend_factor > 0.5 else "target_centered → move_forward"
+
             dash.update(
                 obs=obs_np,
                 pred=pred_np,
@@ -893,6 +942,8 @@ def run_demo():
                     "beta":            beta,
                     "lr":              lr_val,
                     "gemini_interval": gem_int,
+                    "strategy_rule":   strategy_rule,
+                    "strategy_blend":  blend_factor,
                 },
                 gemini_event=gemini_event,
                 latent_z=z_now,
