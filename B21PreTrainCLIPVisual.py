@@ -34,11 +34,13 @@ def _load_module(filename: str):
 
 
 _b21 = _load_module("B21PreTrainCLIP.py")
-classify_frame              = _b21.classify_frame
-LABEL_DESCRIPTIONS          = _b21.LABEL_DESCRIPTIONS
-_register_env               = _b21._register_prediction_world_env
-_entity_label               = _b21._entity_label
-_visible_entities_in_fov    = _b21._visible_entities_in_fov
+classify_frame           = _b21.classify_frame
+LABEL_DESCRIPTIONS       = _b21.LABEL_DESCRIPTIONS
+_register_env            = _b21._register_prediction_world_env
+_register_empty_env      = _b21._register_empty_env
+_register_single_env     = _b21._register_single_env
+_collect_one_group       = _b21._collect_one_group
+_GROUP_DEFS              = _b21._GROUP_DEFS
 
 _b16 = _load_module("B16FullIntegration.py")
 draw_scene  = _b16.draw_scene
@@ -46,191 +48,191 @@ SCENE_TYPES = _b16.SCENE_TYPES
 
 
 # ─────────────────────────────────────────────
-# Frame-Sammler (identisch zu B21 – gezielt)
+# Frame-Sammler (5-Gruppen-Strategie)
 # ─────────────────────────────────────────────
 
-def _collect_miniworld_samples(n: int, env_name: str):
-    """
-    Erzeugt n gezielte Frames aus MiniWorld.
-    Label-Herkunft: 'entity' (ground truth) oder 'pixel' (Fallback).
-    Gibt (frames, labels, sources) zurück.
-    """
+N_PER_GROUP = 2                        # Samples pro Gruppe
+COLS        = len(_GROUP_DEFS)         # 5 Spalten = 5 Gruppen
+ROWS        = N_PER_GROUP              # 2 Zeilen
+N_SAMPLES   = COLS * ROWS              # 10 gesamt
+
+# Gruppenfarben für den Spaltenrahmen
+_GROUP_COLORS = ["#5566aa", "#aa6655", "#55aa66", "#aa9944", "#8855bb"]
+
+
+def _make_miniworld_envs(env_name: str) -> dict:
+    """Erstellt die drei MiniWorld-Environments (einmalig, werden wiederverwendet)."""
     import gymnasium as gym
     import miniworld  # noqa: F401
-    from PIL import Image as PILImage
 
     _register_env(gym)
-    env = gym.make(env_name, render_mode="rgb_array", view="agent")
+    _register_empty_env(gym)
+    _register_single_env(gym)
 
-    frames  = []
-    labels  = []
-    sources = []  # "entity" | "pixel"
-
-    for _ in range(n):
-        obs, _ = env.reset()
-        uw = env.unwrapped
-
-        colored = [(e, _entity_label(e)) for e in uw.entities
-                   if type(e).__name__ != 'Agent'
-                   and _entity_label(e) is not None]
-
-        label  = None
-        source = "pixel"
-        if colored:
-            target, target_label = colored[np.random.randint(len(colored))]
-            dx = target.pos[0] - uw.agent.pos[0]
-            dz = target.pos[2] - uw.agent.pos[2]
-            uw.agent.dir = np.arctan2(-dz, dx)
-            for _ in range(np.random.randint(0, 8)):
-                obs, _, term, trunc, _ = env.step(2)
-                if term or trunc:
-                    break
-            uw.agent.dir += np.random.uniform(-0.25, 0.25)
-            obs = uw.render_obs()
-
-            # Label = nächstes Objekt im FOV, nicht das ursprüngliche Ziel
-            visible = _visible_entities_in_fov(uw)
-            if visible:
-                label  = visible[0][1]
-                source = "entity"
-            else:
-                label  = target_label   # Fallback: Ziel außerhalb FOV
-                source = "entity"
-
-        img = np.array(
-            PILImage.fromarray(obs).resize((128, 128), PILImage.BILINEAR),
-            dtype=np.uint8
-        )
-        if label is None:
-            # FOV-Check als zweite Chance
-            visible = _visible_entities_in_fov(uw)
-            if visible:
-                label  = visible[0][1]
-                source = "fov"
-            else:
-                label  = classify_frame(img)
-                source = "pixel"
-
-        frames.append(img)
-        labels.append(label)
-        sources.append(source)
-
-    env.close()
-    return frames, labels, sources
+    return {
+        "empty":  gym.make("PredictionWorld-Empty-v0",
+                           render_mode="rgb_array", view="agent"),
+        "single": gym.make("PredictionWorld-Single-v0",
+                           render_mode="rgb_array", view="agent"),
+        "full":   gym.make(env_name,
+                           render_mode="rgb_array", view="agent"),
+    }
 
 
-def _collect_mock_samples(n: int):
-    """Erzeugt n Mock-Frames (ohne MiniWorld)."""
-    frames  = []
-    labels  = []
-    sources = []
-    for i in range(n):
-        scene = SCENE_TYPES[np.random.randint(len(SCENE_TYPES))]
-        noise = 0.03 + 0.12 * np.random.rand()
-        img = draw_scene(scene, noise=noise)
-        frames.append(img)
-        labels.append(classify_frame(img))
-        sources.append("pixel")
-    return frames, labels, sources
+def _collect_miniworld_samples(envs: dict):
+    """
+    Erzeugt N_PER_GROUP Frames pro Gruppe mit bereits geöffneten Environments.
+    Gibt (frames, labels, sources, group_indices) zurück.
+    """
+    frames, labels, sources, group_indices = [], [], [], []
+
+    for gi, (env_type, aimed, _desc) in enumerate(_GROUP_DEFS):
+        imgs, lbls, srcs = _collect_one_group(envs[env_type], N_PER_GROUP, aimed)
+        frames.extend(imgs)
+        labels.extend(lbls)
+        sources.extend(srcs)
+        group_indices.extend([gi] * N_PER_GROUP)
+
+    return frames, labels, sources, group_indices
+
+
+def _collect_mock_samples():
+    """Mock-Fallback: gleichmäßig über Gruppen verteilt."""
+    frames, labels, sources, group_indices = [], [], [], []
+    for gi in range(len(_GROUP_DEFS)):
+        for _ in range(N_PER_GROUP):
+            scene = SCENE_TYPES[np.random.randint(len(SCENE_TYPES))]
+            img = draw_scene(scene, noise=0.03 + 0.12 * np.random.rand())
+            frames.append(img)
+            labels.append(classify_frame(img))
+            sources.append("pixel")
+            group_indices.append(gi)
+    return frames, labels, sources, group_indices
 
 
 # ─────────────────────────────────────────────
 # Visualisierung
 # ─────────────────────────────────────────────
 
-COLS = 4
-ROWS = 2
-N_SAMPLES = COLS * ROWS  # 8
-
-
 class LabelVisualizer:
     def __init__(self, source: str, env_name: str):
         self.source   = source
         self.env_name = env_name
+        self._envs    = None  # wird lazy erstellt und bis zum Schließen gehalten
 
-        self.fig = plt.figure(figsize=(14, 7))
+        self.fig = plt.figure(figsize=(16, 7))
         self.fig.patch.set_facecolor('#1e1e2e')
         self.fig.suptitle(
-            "B21 – CLIP Label-Überprüfung  (MiniWorld Frames)",
+            "B21 – CLIP Label-Überprüfung  (5 Gruppen × 2 Samples)",
             color='white', fontsize=13, fontweight='bold'
         )
 
-        # Grid: 2 Bild-Reihen + 1 Button-Reihe
+        # Grid: Gruppen-Header + ROWS Bild-Reihen + Button-Reihe
         gs = gridspec.GridSpec(
-            ROWS + 1, COLS,
+            ROWS + 2, COLS,
             figure=self.fig,
-            hspace=0.45, wspace=0.08,
-            top=0.90, bottom=0.08,
-            left=0.04, right=0.96
+            hspace=0.55, wspace=0.06,
+            top=0.90, bottom=0.07,
+            left=0.02, right=0.98
         )
 
+        # Gruppen-Header (Zeile 0)
+        self.header_axes = []
+        for c, (_env_type, aimed, desc) in enumerate(_GROUP_DEFS):
+            ax = self.fig.add_subplot(gs[0, c])
+            ax.set_facecolor(_GROUP_COLORS[c])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.text(0.5, 0.5, f"G{c+1}\n{desc}",
+                    ha='center', va='center',
+                    color='white', fontsize=8, fontweight='bold',
+                    transform=ax.transAxes)
+            for spine in ax.spines.values():
+                spine.set_edgecolor(_GROUP_COLORS[c])
+            self.header_axes.append(ax)
+
+        # Bild-Achsen (Zeilen 1 bis ROWS)
         self.axes = []
         for r in range(ROWS):
             for c in range(COLS):
-                ax = self.fig.add_subplot(gs[r, c])
+                ax = self.fig.add_subplot(gs[r + 1, c])
                 ax.set_facecolor('#2a2a3e')
                 ax.set_xticks([])
                 ax.set_yticks([])
                 self.axes.append(ax)
 
-        # "Next"-Button (zentriert unter den Bildern)
-        btn_ax = self.fig.add_subplot(gs[ROWS, 1:3])
+        # "Next"-Button
+        btn_ax = self.fig.add_subplot(gs[ROWS + 1, 1:4])
         btn_ax.set_facecolor('#1e1e2e')
-        self.btn = Button(
-            btn_ax, 'Next  ▶',
-            color='#3a3a5e', hovercolor='#5a5a8e'
-        )
+        self.btn = Button(btn_ax, 'Next  ▶',
+                          color='#3a3a5e', hovercolor='#5a5a8e')
         self.btn.label.set_color('white')
         self.btn.label.set_fontsize(11)
         self.btn.on_clicked(self._on_next)
+        self.fig.canvas.mpl_connect('close_event', self._on_close)
 
         self._load_and_show()
         plt.show()
-
-    # ── intern ────────────────────────────────
 
     def _load_samples(self):
         print(f"Sammle {N_SAMPLES} Samples ({self.source})...")
         if self.source == "miniworld":
             try:
-                return _collect_miniworld_samples(N_SAMPLES, self.env_name)
+                if self._envs is None:
+                    print("  Initialisiere MiniWorld-Environments (einmalig)...")
+                    self._envs = _make_miniworld_envs(self.env_name)
+                return _collect_miniworld_samples(self._envs)
             except Exception as e:
                 print(f"  MiniWorld-Fehler: {e} → Fallback auf Mock")
-        return _collect_mock_samples(N_SAMPLES)
+        return _collect_mock_samples()
+
+    def _on_close(self, _event):
+        if self._envs is not None:
+            print("Schließe MiniWorld-Environments...")
+            for env in self._envs.values():
+                try:
+                    env.close()
+                except Exception:
+                    pass
+            self._envs = None
 
     def _load_and_show(self):
-        frames, labels, sources = self._load_samples()
-        for i, ax in enumerate(self.axes):
-            ax.clear()
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.set_facecolor('#2a2a3e')
+        frames, labels, sources, group_indices = self._load_samples()
 
-            img    = frames[i]
-            label  = labels[i]
-            source = sources[i]
-            desc   = LABEL_DESCRIPTIONS.get(label, label)
+        # Samples sind nach Gruppe geordnet: G0,G0, G1,G1, ... → in 5×2 Grid
+        # Spalte = Gruppe, Zeile = Sample-Index innerhalb Gruppe
+        for r in range(ROWS):
+            for c in range(COLS):
+                idx = c * N_PER_GROUP + r   # Sample c*2+r
+                ax  = self.axes[r * COLS + c]
 
-            # Source-Badge im Titel: ✔ entity/fov = zuverlässig, ⚠ pixel = Heuristik
-            badge = {"entity": "✔ entity", "fov": "✔ fov", "pixel": "⚠ pixel"}.get(source, source)
+                ax.clear()
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_facecolor('#2a2a3e')
 
-            ax.imshow(img)
-            ax.set_title(
-                f"{label}  [{badge}]\n{desc}",
-                color='white', fontsize=7.5,
-                pad=4, wrap=True
-            )
-            # Rahmenfarbe je nach Label
-            edge_color = {
-                "red": "#ff4444", "green": "#44ff44", "blue": "#4488ff",
-                "yellow": "#ffee44", "orange": "#ff8833", "white": "#cccccc",
-                "wall": "#888888", "empty": "#444466",
-            }.get(label, "#888888")
-            # Rahmendicke: dünn bei Pixel-Fallback (unsicher)
-            lw = 2 if source != "pixel" else 1
-            for spine in ax.spines.values():
-                spine.set_edgecolor(edge_color)
-                spine.set_linewidth(lw)
+                img    = frames[idx]
+                label  = labels[idx]
+                source = sources[idx]
+                desc   = LABEL_DESCRIPTIONS.get(label, label)
+                badge  = {"entity": "✔", "fov": "~", "pixel": "⚠"}.get(source, source)
+
+                ax.imshow(img)
+                ax.set_title(
+                    f"{label} {badge}\n{desc}",
+                    color='white', fontsize=7,
+                    pad=3, wrap=True
+                )
+
+                edge_color = {
+                    "red": "#ff4444", "green": "#44ff44", "blue": "#4488ff",
+                    "yellow": "#ffee44", "orange": "#ff8833", "white": "#cccccc",
+                    "wall": "#888888", "empty": "#446688",
+                }.get(label, "#888888")
+                lw = 2 if source != "pixel" else 1
+                for spine in ax.spines.values():
+                    spine.set_edgecolor(edge_color)
+                    spine.set_linewidth(lw)
 
         self.fig.canvas.draw_idle()
         print("  ✓ Angezeigt.")
@@ -262,7 +264,7 @@ def main():
     print("=" * 55)
     print(f"  Quelle : {args.source}")
     print(f"  Umgebung: {args.env}")
-    print(f"  Zeige {N_SAMPLES} Samples  (COLS={COLS}, ROWS={ROWS})")
+    print(f"  Zeige {N_SAMPLES} Samples  ({COLS} Gruppen × {ROWS} Samples)")
     print()
 
     LabelVisualizer(source=args.source, env_name=args.env)

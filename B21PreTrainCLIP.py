@@ -95,8 +95,131 @@ def _register_prediction_world_env(gym):
                  max_episode_steps=300)
 
 
-# ─────────────────────────────────────────────
-# ENTITY-BASIERTES LABELING (primär)
+def _register_empty_env(gym):
+    """Registriert PredictionWorld-Empty (kein Objekt im Raum)."""
+    env_id = "PredictionWorld-Empty-v0"
+    if env_id in gym.envs.registry:
+        return
+    from miniworld.envs.oneroom import OneRoom
+
+    class PredictionWorldEmpty(OneRoom):
+        def _gen_world(self):
+            self.add_rect_room(min_x=0, max_x=self.size,
+                               min_z=0, max_z=self.size)
+            self.box = None   # OneRoom.step() erwartet self.box
+            self.place_agent()
+
+        def step(self, action):
+            # Kein Zielobjekt → nur Basis-Step ohne near(self.box)-Check
+            from miniworld.miniworld import MiniWorldEnv
+            return MiniWorldEnv.step(self, action)
+
+    gym.register(id=env_id,
+                 entry_point=lambda **kw: PredictionWorldEmpty(**kw),
+                 max_episode_steps=300)
+
+
+def _register_single_env(gym):
+    """Registriert PredictionWorld-Single (ein zufälliges Objekt pro Reset)."""
+    env_id = "PredictionWorld-Single-v0"
+    if env_id in gym.envs.registry:
+        return
+    from miniworld.envs.oneroom import OneRoom
+    from miniworld.entity import Box, Ball, COLORS, COLOR_NAMES
+
+    if "orange" not in COLORS:
+        COLORS["orange"] = np.array([1.0, 0.5, 0.0])
+    if "white" not in COLORS:
+        COLORS["white"] = np.array([1.0, 1.0, 1.0])
+    for c in ("orange", "white"):
+        if c not in COLOR_NAMES:
+            COLOR_NAMES.append(c)
+
+    _specs = [
+        ("box",  "red"),   ("box",  "yellow"),
+        ("box",  "white"), ("box",  "orange"),
+        ("ball", "green"), ("ball", "blue"),
+    ]
+
+    class PredictionWorldSingle(OneRoom):
+        def _gen_world(self):
+            self.add_rect_room(min_x=0, max_x=self.size,
+                               min_z=0, max_z=self.size)
+            etype, color = _specs[np.random.randint(len(_specs))]
+            ent = Box(color=color) if etype == "box" else Ball(color=color)
+            self.box = self.place_entity(ent)   # OneRoom.step() erwartet self.box
+            self.place_agent()
+
+    gym.register(id=env_id,
+                 entry_point=lambda **kw: PredictionWorldSingle(**kw),
+                 max_episode_steps=300)
+
+
+# Gruppen-Definitionen für die 5-Strategie-Sammlung
+# (env_type, aimed, kurzbeschreibung)
+_GROUP_DEFS = [
+    ("empty",  False, "leer / zufällig"),
+    ("single", False, "1 Obj / zufällig"),
+    ("single", True,  "1 Obj / gezielt"),
+    ("full",   False, "alle Obj / zufällig"),
+    ("full",   True,  "alle Obj / gezielt"),
+]
+
+
+def _collect_one_group(env, n: int, aimed: bool) -> tuple:
+    """
+    Sammelt n Frames für eine Gruppe.
+    aimed=False → Agent behält zufällige Reset-Richtung.
+    aimed=True  → Agent wird auf ein zufälliges Objekt ausgerichtet.
+    Gibt (frames, labels, sources) zurück.
+    sources: "entity" | "fov" | "pixel"
+    """
+    from PIL import Image as PILImage
+
+    frames, labels, sources = [], [], []
+
+    for _ in range(n):
+        obs, _ = env.reset()
+        uw = env.unwrapped
+        target_label = None
+
+        if aimed:
+            colored = [(e, _entity_label(e)) for e in uw.entities
+                       if type(e).__name__ != 'Agent'
+                       and _entity_label(e) is not None]
+            if colored:
+                target, target_label = colored[np.random.randint(len(colored))]
+                dx = target.pos[0] - uw.agent.pos[0]
+                dz = target.pos[2] - uw.agent.pos[2]
+                uw.agent.dir = np.arctan2(-dz, dx)
+                for _s in range(np.random.randint(0, 8)):
+                    obs, _, term, trunc, _ = env.step(2)
+                    if term or trunc:
+                        break
+                uw.agent.dir += np.random.uniform(-0.25, 0.25)
+                obs = uw.render_obs()
+
+        img = np.array(
+            PILImage.fromarray(obs).resize((128, 128), PILImage.BILINEAR),
+            dtype=np.uint8
+        )
+
+        visible = _visible_entities_in_fov(uw)
+        if visible:
+            label  = visible[0][1]
+            source = "entity" if aimed else "fov"
+        elif aimed and target_label:
+            label  = target_label
+            source = "entity"
+        else:
+            label  = classify_frame(img)
+            source = "pixel"
+
+        frames.append(img)
+        labels.append(label)
+        sources.append(source)
+
+    return frames, labels, sources
 # ─────────────────────────────────────────────
 
 _KNOWN_COLORS = ("red", "green", "blue", "yellow", "orange", "white")
@@ -152,25 +275,35 @@ def _visual_radius(ent) -> float:
     return ent.radius              # Kugel: Kugelradius ≈ 0.43
 
 
-def _visible_entities_in_fov(uw, fov_deg: float = _FOV_DEG,
+def _visible_entities_in_fov(uw, fov_deg: float = 80.0,
                               max_coverage_box: float = 0.85,
-                              max_coverage_ball: float = 0.65) -> list:
+                              max_coverage_ball: float = 0.85) -> list:
     """
     Gibt alle farbigen Nicht-Agent-Entities zurück, die sich aktuell im
     Kamera-FOV des Agenten befinden, sortiert nach Distanz (nächste zuerst).
 
-    Separate Schwellwerte für Box und Ball, weil ihre Radien sich unterscheiden:
-      Box  (r_visual≈0.40): max_coverage_box=0.85  → d_min ≈ 0.84 m
-      Ball (r_visual≈0.43): max_coverage_ball=0.65 → d_min ≈ 1.21 m
+    Horizontal: fov_deg=80° (+20° Puffer über echte Kamera-FOV 60°), damit
+    halb-sichtbare Objekte am Bildrand zuverlässig erkannt werden.
 
-    Herleitung:  d_min = r_visual / tan(max_coverage · fov/2)
+    Vertikal: Exakter physischer Check – Oberkante der Entity muss innerhalb
+    der unteren Kante der vertikalen FOV liegen (30° unter Horizontal).
+    Kamera-Augenhöhe = agent.pos[1] + agent.height.
+    Dieser Check ersetzt den alten max_coverage_ball-Hack:
+      Ball auf dem Boden (top ≈ 0.86 m, Kamera ≈ 1.6 m):
+        dy_to_top ≈ 0.74 m → unsichtbar wenn dist < 1.28 m
+
+    max_coverage: nur als Sicherheitsnetz für extreme Nähe (beide Typen 0.85).
+      r_visual / tan(half_coverage) = Mindestabstand
+      Box  (r_v≈0.40, 0.85): d_min ≈ 0.84 m
+      Ball (r_v≈0.43, 0.85): d_min ≈ 0.90 m
 
     Koordinaten: agent.dir wächst CCW; Vorwärtsvektor = (cos(dir), 0, -sin(dir)).
-    FOV-Check: Winkel zwischen Blickrichtung und Richtung zum Objekt ≤ half_fov.
     """
-    agent_pos = uw.agent.pos
-    agent_dir = uw.agent.dir
-    half_fov  = np.radians(fov_deg / 2.0)
+    agent_pos   = uw.agent.pos
+    agent_dir   = uw.agent.dir
+    agent_eye_y = agent_pos[1] + uw.agent.height   # Kamera-Augenhöhe
+    half_fov_h  = np.radians(fov_deg / 2.0)         # horizontal (68°/2)
+    half_fov_v  = np.radians(_FOV_DEG / 2.0)        # vertikal   (60°/2, exakt)
 
     visible = []
     for ent in uw.entities:
@@ -189,17 +322,27 @@ def _visible_entities_in_fov(uw, fov_deg: float = _FOV_DEG,
         if dist < 1e-6:
             continue
 
-        # Per-Typ Schwellwert
-        is_ball   = 'ball' in type(ent).__name__.lower()
-        coverage  = max_coverage_ball if is_ball else max_coverage_box
-        max_ang_h = np.radians(fov_deg * coverage / 2.0)
+        r_v = _visual_radius(ent)
 
-        if np.arctan2(_visual_radius(ent), dist) > max_ang_h:
-            continue  # zu nah – füllt Frame zu stark
+        # 1. Horizontaler Angular-Coverage-Check (zu nah = füllt Frame zu stark)
+        is_ball  = 'ball' in type(ent).__name__.lower()
+        coverage = max_coverage_ball if is_ball else max_coverage_box
+        if np.arctan2(r_v, dist) > np.radians(_FOV_DEG * coverage / 2.0):
+            continue
 
+        # 2. Vertikaler FOV-Check: Oberkante der Entity muss im Bild sichtbar sein.
+        #    Wenn die Oberkante unterhalb der unteren Kante der vertikalen FOV liegt
+        #    (Kamera schaut horizontal, Ball liegt auf dem Boden), ist das Objekt
+        #    physisch nicht sichtbar – egal wie gut der horizontale Winkel passt.
+        entity_top_y = ent.pos[1] + r_v
+        dy_to_top    = agent_eye_y - entity_top_y
+        if dy_to_top > 0 and np.arctan2(dy_to_top, dist) > half_fov_v:
+            continue  # Oberkante unterhalb unterer vertikaler FOV-Kante
+
+        # 3. Horizontaler FOV-Check (mit Puffer)
         angle_to = np.arctan2(-dz, dx)
         diff = (angle_to - agent_dir + np.pi) % (2.0 * np.pi) - np.pi
-        if abs(diff) <= half_fov:
+        if abs(diff) <= half_fov_h:
             visible.append((ent, label, dist))
 
     return sorted(visible, key=lambda x: x[2])
@@ -254,13 +397,17 @@ def classify_frame(frame: np.ndarray) -> str:
 
     brightness = (mean_r + mean_g + mean_b) / 3.0
 
-    # Floor-Erkennung: kariertes Schachbrettmuster im unteren Bilddrittel.
+    # Floor-Erkennung: kariertes Schachbrettmuster im unteren Bildbereich.
     # Schachbrett → hohe lokale Varianz (abwechselnd hell/dunkel).
     # Wand → gleichförmig grau → niedrige Varianz.
-    lower_third = f[85:, :, :]          # unteres Drittel (Zeilen 85–127)
-    floor_std   = np.std(lower_third)   # Schachbrett ≈ 0.3+, Wand ≈ 0.05–0.1
+    # Region: Zeilen 60-127 (untere Hälfte) – Boden ist oft auch in der
+    # Bildmitte sichtbar, nicht nur ganz unten.
+    # Threshold: 0.08 – MiniWorld-Schachbrett (gedämpft grau) ≈ 0.10–0.25;
+    # Wand ≈ 0.02–0.06.
+    lower_half = f[60:, :, :]
+    floor_std  = np.std(lower_half)
 
-    if floor_std > 0.15:
+    if floor_std > 0.08:
         return "empty"   # karierter Boden sichtbar
     return "wall"        # gleichförmige Wand oder Decke
 
@@ -290,100 +437,48 @@ class LabeledFrameDataset(Dataset):
             print(f"    {label:8s}: {count:4d} ({100*count/len(self.labels):.1f}%)")
 
     def _collect_miniworld(self, n_frames, env_name):
-        print(f"Sammle {n_frames} gelabelte Frames aus {env_name}...")
-        print(f"  Phase 1 (50%): gezielt auf Objekt – Entity-Label (ground truth)")
-        print(f"  Phase 2 (50%): zufällig     – FOV-sichtbarstes Objekt oder wall/empty")
+        """
+        5 gleich große Gruppen (je ~n_frames/5):
+          G1: Leerer Raum,  zufällige Richtung
+          G2: Ein Objekt,   zufällige Richtung
+          G3: Ein Objekt,   auf Objekt ausgerichtet
+          G4: Alle Objekte, zufällige Richtung
+          G5: Alle Objekte, auf Objekt ausgerichtet
+        """
         try:
             import gymnasium as gym
             import miniworld  # noqa: F401
-            from PIL import Image as PILImage
 
             _register_prediction_world_env(gym)
+            _register_empty_env(gym)
+            _register_single_env(gym)
 
-            env = gym.make(env_name, render_mode="rgb_array", view="agent")
-            obs, _ = env.reset()
-            uw = env.unwrapped
+            envs = {
+                "empty":  gym.make("PredictionWorld-Empty-v0",
+                                   render_mode="rgb_array", view="agent"),
+                "single": gym.make("PredictionWorld-Single-v0",
+                                   render_mode="rgb_array", view="agent"),
+                "full":   gym.make(env_name,
+                                   render_mode="rgb_array", view="agent"),
+            }
 
-            n_targeted = n_frames // 2
-            n_random   = n_frames - n_targeted
+            n = n_frames // 5
+            counts = [n, n, n, n, n_frames - 4 * n]
 
-            # ── Phase 1: Gezielt auf einzelnes Objekt ausrichten ──────────────
-            # Label kommt direkt vom Entity (nicht vom Pixel-Heuristik).
-            for i in range(n_targeted):
-                obs, _ = env.reset()
-                uw = env.unwrapped
+            print(f"Sammle {n_frames} Frames ({len(_GROUP_DEFS)} Gruppen)...")
+            total = 0
+            for (env_type, aimed, desc), n_group in zip(_GROUP_DEFS, counts):
+                print(f"  {desc}: {n_group} Frames")
+                imgs, lbls, _ = _collect_one_group(envs[env_type], n_group, aimed)
+                self.frames.extend(imgs)
+                self.labels.extend(lbls)
+                total += n_group
+                if total % 500 == 0:
+                    print(f"  {total}/{n_frames} Frames gesammelt")
 
-                # Alle farbigen Entities sammeln
-                colored = [(e, _entity_label(e)) for e in uw.entities
-                           if type(e).__name__ != 'Agent'
-                           and _entity_label(e) is not None]
+            for env in envs.values():
+                env.close()
 
-                label = None
-                target_label = None
-                if colored:
-                    target, target_label = colored[np.random.randint(len(colored))]
-                    # Agent exakt auf Ziel ausrichten
-                    dx = target.pos[0] - uw.agent.pos[0]
-                    dz = target.pos[2] - uw.agent.pos[2]
-                    uw.agent.dir = np.arctan2(-dz, dx)
-                    # Ein paar Schritte vorwärts (näher zum Objekt)
-                    for _ in range(np.random.randint(0, 8)):
-                        obs, _, term, trunc, _ = env.step(2)
-                        if term or trunc:
-                            break
-                    # Kleine Blickwinkel-Variation (Objekt bleibt im FOV)
-                    uw.agent.dir += np.random.uniform(-0.25, 0.25)
-                    obs = uw.render_obs()
-
-                    # Label = nächstes Objekt im FOV (nicht das Ziel-Entity!).
-                    # Nach Vorwärtsgehen kann ein anderes Objekt näher sein.
-                    visible = _visible_entities_in_fov(uw)
-                    if visible:
-                        label = visible[0][1]   # nächstes sichtbares Objekt
-                    else:
-                        label = target_label    # Fallback: Ziel außerhalb FOV
-
-                img = np.array(
-                    PILImage.fromarray(obs).resize((128, 128), PILImage.BILINEAR),
-                    dtype=np.uint8
-                )
-                self.frames.append(img)
-                # Fallback: kein Objekt gefunden → Pixel-Heuristik (wall/empty)
-                self.labels.append(label if label else classify_frame(img))
-
-                if (i + 1) % 500 == 0:
-                    print(f"  {i+1}/{n_frames} Frames (gezielt)")
-
-            # ── Phase 2: Zufällige Exploration ────────────────────────────────
-            # Label = nähestes Objekt im FOV → sonst wall/empty per Pixel-Heuristik.
-            obs, _ = env.reset()
-            uw = env.unwrapped
-            for i in range(n_random):
-                action = env.action_space.sample()
-                obs, _, terminated, truncated, _ = env.step(action)
-                if terminated or truncated:
-                    obs, _ = env.reset()
-                    uw = env.unwrapped
-
-                img = np.array(
-                    PILImage.fromarray(obs).resize((128, 128), PILImage.BILINEAR),
-                    dtype=np.uint8
-                )
-
-                # FOV-basiertes Label: nähestes sichtbares Objekt
-                visible = _visible_entities_in_fov(uw)
-                if visible:
-                    label = visible[0][1]  # Label des nächsten Objekts im FOV
-                else:
-                    label = classify_frame(img)  # wall / empty Fallback
-
-                self.frames.append(img)
-                self.labels.append(label)
-
-                if (n_targeted + i + 1) % 500 == 0:
-                    print(f"  {n_targeted+i+1}/{n_frames} Frames (zufällig)")
-
-            env.close()
         except ImportError:
             print("  MiniWorld nicht verfügbar → Fallback auf Mock")
             self._collect_mock(n_frames)
