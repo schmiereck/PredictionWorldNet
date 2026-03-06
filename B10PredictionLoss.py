@@ -49,6 +49,47 @@ import torch.nn.functional as F
 
 
 # ─────────────────────────────────────────────
+# SSIM (Structural Similarity Index)
+# ─────────────────────────────────────────────
+
+def ssim(pred: torch.Tensor, target: torch.Tensor,
+         window_size: int = 7, C1: float = 0.01**2, C2: float = 0.03**2
+) -> torch.Tensor:
+    """
+    Berechnet SSIM zwischen pred und target.
+    Args: pred, target: (B, C, H, W) in [0, 1]
+    Returns: Skalar SSIM ∈ [-1, 1], typisch [0, 1]
+    """
+    channels = pred.size(1)
+    # Uniformes Fenster (einfacher als Gaussian, kaum Qualitätsunterschied)
+    kernel = torch.ones(channels, 1, window_size, window_size,
+                        device=pred.device) / (window_size ** 2)
+    pad = window_size // 2
+
+    mu_x  = F.conv2d(pred,   kernel, padding=pad, groups=channels)
+    mu_y  = F.conv2d(target, kernel, padding=pad, groups=channels)
+    mu_xx = mu_x * mu_x
+    mu_yy = mu_y * mu_y
+    mu_xy = mu_x * mu_y
+
+    sig_xx = F.conv2d(pred * pred,     kernel, padding=pad, groups=channels) - mu_xx
+    sig_yy = F.conv2d(target * target, kernel, padding=pad, groups=channels) - mu_yy
+    sig_xy = F.conv2d(pred * target,   kernel, padding=pad, groups=channels) - mu_xy
+
+    num   = (2 * mu_xy + C1) * (2 * sig_xy + C2)
+    denom = (mu_xx + mu_yy + C1) * (sig_xx + sig_yy + C2)
+    return (num / (denom + 1e-8)).mean()
+
+
+def combined_recon_loss(pred: torch.Tensor, target: torch.Tensor,
+                        ssim_weight: float = 0.3) -> torch.Tensor:
+    """MSE + SSIM: L = (1-w)*MSE + w*(1-SSIM)"""
+    mse = F.mse_loss(pred, target)
+    ssim_val = ssim(pred, target)
+    return (1.0 - ssim_weight) * mse + ssim_weight * (1.0 - ssim_val)
+
+
+# ─────────────────────────────────────────────
 # SZENEN (aus B08)
 # ─────────────────────────────────────────────
 
@@ -178,19 +219,29 @@ class PredictionLoss(nn.Module):
         self.beta_max = beta_max
         self.beta     = 0.0
         # Projektion: CLIP-Dim → Latent-Dim für Cosinus-Vergleich
-        self.goal_proj = nn.Linear(clip_dim, latent_dim, bias=False)
+        self.goal_proj = nn.Sequential(
+            nn.Linear(clip_dim, 128),
+            nn.ReLU(True),
+            nn.Linear(128, latent_dim),
+        )
 
     def anneal_beta(self, step: int, warmup_steps: int = 200):
         """
-        KL-Annealing: Beta wächst linear von 0 → beta_max.
-        Verhindert Posterior Collapse in den ersten Trainings-Steps.
+        KL-Annealing: Beta wächst per Cosine-Schedule von 0 → beta_max.
+        Startet langsam, beschleunigt in der Mitte, bremst am Ende.
+        Verhindert Posterior Collapse besser als lineares Annealing.
         """
-        self.beta = min(self.beta_max, self.beta_max * step / warmup_steps)
+        if step >= warmup_steps:
+            self.beta = self.beta_max
+        else:
+            import math
+            t = step / warmup_steps
+            self.beta = self.beta_max * 0.5 * (1.0 - math.cos(math.pi * t))
 
     def reconstruction_loss(self, recon: torch.Tensor,
                             target: torch.Tensor) -> torch.Tensor:
-        """MSE zwischen rekonstruiertem und echtem Frame."""
-        return F.mse_loss(recon, target)
+        """MSE + SSIM zwischen rekonstruiertem und echtem Frame."""
+        return combined_recon_loss(recon, target, ssim_weight=0.3)
 
     def kl_loss(self, mu: torch.Tensor,
                 log_var: torch.Tensor) -> torch.Tensor:
@@ -232,7 +283,7 @@ class PredictionLoss(nn.Module):
         ctx_norm  = F.normalize(context, dim=-1)
         goal_proj = F.normalize(self.goal_proj(goal_embedding), dim=-1)
         cos_sim   = (ctx_norm * goal_proj).sum(dim=-1)
-        return (1.0 - cos_sim).mean()
+        return torch.clamp(1.0 - cos_sim, 0.0, 1.0).mean()
 
     def intrinsic_reward(self, predicted_frame: torch.Tensor,
                          actual_frame: torch.Tensor) -> torch.Tensor:

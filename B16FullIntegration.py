@@ -57,6 +57,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from B10PredictionLoss import combined_recon_loss
+
 try:
     from google import genai
     from google.genai import types
@@ -201,7 +203,7 @@ class Decoder(nn.Module):
 class TemporalTransformer(nn.Module):
     """Vereinfachter Temporal Transformer (B07)."""
     def __init__(self, latent_dim=LATENT_DIM, action_dim=ACTION_DIM,
-                 d_model=D_MODEL, n_heads=4, n_layers=2):
+                 d_model=D_MODEL, n_heads=4, n_layers=3):
         super().__init__()
         self.d_model = d_model
         self.cls_token   = nn.Parameter(torch.randn(1, 1, d_model))
@@ -210,9 +212,11 @@ class TemporalTransformer(nn.Module):
         self.proj_hist   = nn.Linear(latent_dim + action_dim + latent_dim, d_model)
         encoder_layer    = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=n_heads, dim_feedforward=256,
-            dropout=0.1, batch_first=True
+            dropout=0.1, batch_first=True, norm_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        # Next-Latent-Prediction Head: context → predicted z_{t+1}
+        self.next_z_head = nn.Linear(d_model, latent_dim)
 
     def forward(self, z_cur, goal_emb, z_hist=None, a_hist=None):
         B = z_cur.size(0)
@@ -529,7 +533,11 @@ class IntegratedSystem:
         self.decoder     = Decoder()
         self.transformer = TemporalTransformer()
         self.action_head = ActionHead()
-        self.goal_proj   = nn.Linear(512, LATENT_DIM, bias=False)
+        self.goal_proj   = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(True),
+            nn.Linear(128, LATENT_DIM),
+        )
 
         # Buffer
         self.replay = ReplayBuffer(max_size=config["buffer_size"])
@@ -721,9 +729,13 @@ class IntegratedSystem:
         Returns: dict mit allen Metriken
         """
         self.total_steps += 1
-        self.beta = min(self.cfg["beta_max"],
-                        self.cfg["beta_max"] * self.total_steps /
-                        self.cfg["beta_warmup"])
+        # Cosine Beta-Annealing: langsamer Start, beschleunigt, bremst am Ende
+        warmup = self.cfg["beta_warmup"]
+        if self.total_steps >= warmup:
+            self.beta = self.cfg["beta_max"]
+        else:
+            t = self.total_steps / warmup
+            self.beta = self.cfg["beta_max"] * 0.5 * (1.0 - np.cos(np.pi * t))
 
         # ── Forward Pass (Inference) ────────────────────────
         self.encoder.eval(); self.decoder.eval()
@@ -790,12 +802,17 @@ class IntegratedSystem:
             gemini_label=gem_label,
         )
 
-        # ── Gesamt-Reward ───────────────────────────────────
-        r_total = (0.3 * r_intr + 0.4 * r_gemini +
-                   0.2 * float(F.cosine_similarity(
-                    F.normalize(z, dim=-1), goal_p, dim=-1
-                ).item()) +
-                   0.1 * float(1.0 - pred_sigma.mean().item()))
+        # ── Gesamt-Reward (alle Komponenten auf [0,1] normalisiert) ──
+        r_intr_norm = min(r_intr, 1.0)
+        r_goal_cos  = float(F.cosine_similarity(
+            F.normalize(z, dim=-1), goal_p, dim=-1
+        ).item())
+        r_goal_norm = (r_goal_cos + 1.0) / 2.0   # [-1,1] → [0,1]
+        r_sigma     = float(1.0 - pred_sigma.mean().item())
+
+        r_total = (0.3 * r_intr_norm + 0.4 * r_gemini +
+                   0.2 * r_goal_norm +
+                   0.1 * r_sigma)
 
         # ── Training Step ───────────────────────────────────
         train_info = {}
@@ -855,18 +872,24 @@ class IntegratedSystem:
 
         pred_action, pred_sigma = self.action_head(context)
 
-        # Nächster Frame
+        # Nächster Frame — Next-Latent-Prediction statt Reconstruction
         _, _, z_next = self.encoder(nobs)
-        pred_next    = self.decoder(z_next)
+        pred_z_next  = self.transformer.next_z_head(context)
 
         # Losses
-        l_recon  = F.mse_loss(recon, obs)
+        l_recon  = combined_recon_loss(recon, obs, ssim_weight=0.3)
         l_kl     = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
         l_action = F.mse_loss(pred_action, acts)
-        l_temp   = F.mse_loss(pred_next, nobs)
-        l_goal   = (1 - F.cosine_similarity(
+        l_next_z = F.mse_loss(pred_z_next, z_next.detach())
+        l_goal   = torch.clamp(1 - F.cosine_similarity(
             F.normalize(context[:, :LATENT_DIM], dim=-1), goal_p, dim=-1
-        )).mean()
+        ), 0.0, 1.0).mean()
+
+        # Sigma-NLL: kalibrierte Unsicherheitsschätzung
+        with torch.no_grad():
+            action_err = (pred_action.detach() - acts).abs()
+        sigma_safe = torch.clamp(pred_sigma, min=1e-4)
+        l_sigma = torch.mean(torch.log(sigma_safe) + action_err / sigma_safe)
 
         # Gemini-gewichteter Recon-Loss
         # Höherer Gemini-Reward → mehr Gewicht auf diesen Batch-Eintrag
@@ -875,13 +898,28 @@ class IntegratedSystem:
 
         fe = (1.0  * l_recon +
               self.beta * l_kl +
-              0.3  * l_temp +
+              0.3  * l_next_z +
               0.2  * l_action +
+              0.05 * l_sigma +
               0.1  * l_goal +
               0.2  * l_gemini)   # Gemini-gewichteter Term
 
         self.optimizer.zero_grad()
         fe.backward()
+
+        # Gradient-Norm pro Modul (Monitoring)
+        def _grad_norm(module):
+            return sum(p.grad.norm().item()**2
+                       for p in module.parameters() if p.grad is not None)**0.5
+
+        grad_norms = {
+            "encoder":     _grad_norm(self.encoder),
+            "decoder":     _grad_norm(self.decoder),
+            "transformer": _grad_norm(self.transformer),
+            "action_head": _grad_norm(self.action_head),
+            "goal_proj":   _grad_norm(self.goal_proj),
+        }
+
         torch.nn.utils.clip_grad_norm_(
             list(self.encoder.parameters()) +
             list(self.decoder.parameters()) +
@@ -893,11 +931,17 @@ class IntegratedSystem:
         self.optimizer.step()
         self.scheduler.step(l_recon.detach())
 
+        kl_val = float(l_kl.detach())
+        # KL-Collapse-Warnung: KL < 0.1 nats → Encoder ignoriert Input
+        if kl_val < 0.1 and self.train_steps > 50:
+            print(f"  ⚠️ KL-Collapse-Warnung: KL={kl_val:.4f} nats (Step {self.train_steps})")
+
         return {
             "fe":     float(fe.detach()),
             "recon":  float(l_recon.detach()),
-            "kl":     float(l_kl.detach()),
+            "kl":     kl_val,
             "action": float(l_action.detach()),
+            "grad_norms": grad_norms,
         }
 
     def get_ros2_command(self, action_np: np.ndarray) -> dict:

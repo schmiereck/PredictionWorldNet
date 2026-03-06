@@ -331,16 +331,15 @@ def run_demo():
         # Haupt-Loss: MSE zwischen vorhergesagter und Ground-Truth Aktion
         loss_action = F.mse_loss(pred_actions, gt_tensor)
 
-        # Unsicherheits-Loss: stabiles Ziel via exponentiell geglättetem Fehler
-        # Wichtig: .detach() damit Sigma-Loss nicht durch Action-Gradienten läuft
+        # Unsicherheits-Loss: NLL für kalibrierte Unsicherheit
+        # loss = log(sigma) + |error| / sigma
         with torch.no_grad():
             errors   = (pred_actions.detach() - gt_tensor).abs()
-            # Clamp verhindert Division durch 0 bei sehr kleinen Fehlern
-            err_norm = torch.clamp(errors / 0.5, 0.0, 1.0)
 
-        loss_sigma = F.mse_loss(pred_sigma, err_norm)
+        sigma_safe = torch.clamp(pred_sigma, min=1e-4)
+        loss_sigma = torch.mean(torch.log(sigma_safe) + errors / sigma_safe)
 
-        loss = loss_action + 0.05 * loss_sigma  # Kleineres Gewicht für Sigma
+        loss = loss_action + 0.05 * loss_sigma
 
         optimizer.zero_grad()
         loss.backward()

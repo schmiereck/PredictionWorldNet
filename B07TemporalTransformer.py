@@ -102,7 +102,7 @@ class TemporalTransformer(nn.Module):
             action_dim:  int = 3,
             d_model:     int = 128,
             n_heads:     int = 4,
-            n_layers:    int = 2,
+            n_layers:    int = 3,
             dropout:     float = 0.1,
             time_steps:  list = None,
     ):
@@ -150,6 +150,9 @@ class TemporalTransformer(nn.Module):
 
         # ── Output Norm ───────────────────────────────
         self.output_norm = nn.LayerNorm(d_model)
+
+        # ── Next-Latent-Prediction Head ───────────────
+        self.next_z_head = nn.Linear(d_model, latent_dim)
 
     def forward(
             self,
@@ -328,22 +331,11 @@ def run_demo():
             z_current, z_goal, z_frames, z_actions, valid
         )
 
-        # Loss: Zwei Terme
-        # 1. Normalisierungs-Loss: Kontext-Norm soll in vernünftigem Bereich bleiben
-        #    → MSE auf normalisiertem Vektor statt auf Norm selbst (stabiler)
-        ctx_normalized = F.normalize(context, dim=-1)
-        loss_norm = F.mse_loss(context, ctx_normalized.detach() * np.sqrt(D_MODEL))
-
-        # 2. Konsistenz-Loss: Ähnliche Inputs → ähnliche Kontexte
-        #    → Cosinus-Distanz zwischen den Batch-Elementen minimieren
-        #    (alle Batch-Elemente haben ähnliche Inputs → sollten ähnliche Kontexte haben)
-        ctx_norm = F.normalize(context, dim=-1)
-        sim_matrix = ctx_norm @ ctx_norm.T                          # (B, B)
-        eye        = torch.eye(BATCH_SIZE, device=context.device)
-        loss_cons  = (1.0 - sim_matrix) * (1.0 - eye)              # Off-Diagonal
-        loss_cons  = loss_cons.mean()
-
-        loss = loss_norm + 0.1 * loss_cons
+        # Loss: Next-Latent-Prediction
+        # Der Transformer soll aus dem Kontext z_{t+1} vorhersagen
+        z_next_target = torch.randn(BATCH_SIZE, LATENT_DIM) * 0.3 + z_current * 0.7
+        pred_z_next   = transformer.next_z_head(context)
+        loss = F.mse_loss(pred_z_next, z_next_target.detach())
 
         optimizer.zero_grad()
         loss.backward()
@@ -514,7 +506,7 @@ def run_demo():
                 ax_loss.plot(range(9, len(loss_history)), ma,
                              color='darkblue', linewidth=2, label='MA-10')
                 ax_loss.legend(fontsize=7)
-            ax_loss.set_title('Training Loss (Norm-Konsistenz)', fontsize=9)
+            ax_loss.set_title('Training Loss (Next-Latent-Prediction)', fontsize=9)
             ax_loss.set_xlabel('Schritt')
 
             # ── Cosinus-Stabilität ─────────────────────
@@ -546,9 +538,9 @@ def run_demo():
     print(f"  Grad-Norm   : {grad_norm:.4f}  (Clipping bei 1.0)")
     print()
     print("Fixes angewendet:")
-    print("  AdamW + Weight Decay 1e-2  → verhindert Gewichts-Explosion")
-    print("  Gradient Clipping 1.0      → verhindert Gradienten-Explosion")
-    print("  Besserer Loss              → Normalisierung + Konsistenz")
+    print("  3 Transformer-Layer          → mehr Kapazität")
+    print("  Next-Latent-Prediction Loss  → task-aligned statt Norm-Konsistenz")
+    print("  Pre-Norm (norm_first=True)   → stabileres Training")
     print()
     print("Naechste Schritte:")
     print("  B08 – CNN Decoder: context → predicted frame")

@@ -117,29 +117,58 @@ class ConditionEvaluator:
         """Wird aufgerufen wenn ein neuer Scan startet."""
         self._pan_steps = 0
 
+    # HSV-Farbbereiche: (H_min, H_max, S_min, V_min)
+    # H in [0, 360], S und V in [0, 1]
+    _HSV_RANGES = {
+        "red":    [(0, 15, 0.3, 0.25), (345, 360, 0.3, 0.25)],
+        "green":  [(80, 160, 0.25, 0.2)],
+        "blue":   [(200, 260, 0.25, 0.2)],
+        "yellow": [(45, 75, 0.3, 0.3)],
+        "orange": [(15, 45, 0.4, 0.3)],
+        "white":  [(0, 360, 0.0, 0.6)],  # Spezialfall: S < 0.15
+    }
+
     def _detect_target(self, img: np.ndarray) -> Optional[np.ndarray]:
-        """Erkennt Ziel-Pixel im 16×16 Bild basierend auf Farbe."""
+        """Erkennt Ziel-Pixel im Bild basierend auf HSV-Farbraum."""
         if img is None:
             return None
 
         f = img.astype(np.float32) / 255.0 if img.dtype == np.uint8 else img
         r, g, b = f[:,:,0], f[:,:,1], f[:,:,2]
 
+        # RGB → HSV
+        cmax = np.maximum(np.maximum(r, g), b)
+        cmin = np.minimum(np.minimum(r, g), b)
+        delta = cmax - cmin + 1e-8
+
+        # Hue [0, 360]
+        h = np.zeros_like(r)
+        rm = (cmax == r)
+        gm = (cmax == g) & ~rm
+        bm = ~rm & ~gm
+        h[rm] = 60.0 * (((g[rm] - b[rm]) / delta[rm]) % 6)
+        h[gm] = 60.0 * (((b[gm] - r[gm]) / delta[gm]) + 2)
+        h[bm] = 60.0 * (((r[bm] - g[bm]) / delta[bm]) + 4)
+
+        # Saturation [0, 1]
+        s = np.where(cmax > 1e-8, delta / cmax, 0.0)
+        v = cmax
+
         color = self.target_color.lower()
-        if color == "red":
-            mask = (r > g + 0.1) & (r > b + 0.1) & (r > 0.3)
-        elif color == "green":
-            mask = (g > r + 0.1) & (g > b + 0.1) & (g > 0.3)
-        elif color == "blue":
-            mask = (b > r + 0.1) & (b > g + 0.1) & (b > 0.3)
-        elif color == "yellow":
-            mask = (r > 0.4) & (g > 0.4) & (b < 0.3)
-        else:
+        ranges = self._HSV_RANGES.get(color)
+
+        if ranges is None:
             # Unbekannte Farbe: "etwas Auffälliges" suchen
             gray = (r + g + b) / 3.0
             deviation = np.abs(r - gray) + np.abs(g - gray) + np.abs(b - gray)
-            mask = deviation > 0.3
+            return deviation > 0.3
 
+        if color == "white":
+            return (s < 0.15) & (v > 0.6)
+
+        mask = np.zeros_like(r, dtype=bool)
+        for h_min, h_max, s_min, v_min in ranges:
+            mask |= (h >= h_min) & (h <= h_max) & (s >= s_min) & (v >= v_min)
         return mask
 
     def _target_position(self, mask: np.ndarray) -> str:
@@ -168,13 +197,13 @@ class ConditionEvaluator:
     def set_target_color(self, goal: str):
         """Extrahiert die Zielfarbe aus dem Goal-String."""
         g = goal.lower()
-        for color in ["red", "green", "blue", "yellow", "orange", "purple"]:
+        for color in ["red", "green", "blue", "yellow", "orange", "white", "purple"]:
             if color in g:
                 self.target_color = color
                 return
         # Deutsche Farbnamen
         for de, en in [("rot", "red"), ("grün", "green"), ("blau", "blue"),
-                       ("gelb", "yellow")]:
+                       ("gelb", "yellow"), ("orange", "orange"), ("weiß", "white")]:
             if de in g:
                 self.target_color = en
                 return

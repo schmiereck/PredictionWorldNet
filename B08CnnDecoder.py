@@ -256,7 +256,8 @@ class CNNDecoder(nn.Module):
 # ─────────────────────────────────────────────
 
 def free_energy_loss(recon, target, mu, log_var, beta: float = 0.5):
-    recon_loss = F.mse_loss(recon, target)
+    from B10PredictionLoss import combined_recon_loss
+    recon_loss = combined_recon_loss(recon, target, ssim_weight=0.3)
     kl_loss    = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
     return recon_loss + beta * kl_loss, recon_loss, kl_loss
 

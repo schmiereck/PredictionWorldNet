@@ -135,7 +135,7 @@ class IntrinsicReward(nn.Module):
             self,
             latent_dim:    int   = 64,
             action_dim:    int   = ACTION_DIM,
-            memory_size:   int   = 200,
+            memory_size:   int   = 1000,
             k_neighbors:   int   = 5,
             w_pred:        float = 1.0,
             w_epist:       float = 0.5,
@@ -359,7 +359,7 @@ def run_demo():
     curiosity = IntrinsicReward(
         latent_dim=LATENT_DIM,
         action_dim=ACTION_DIM,
-        memory_size=200,
+        memory_size=1000,
         k_neighbors=5,
         w_pred=1.0, w_epist=0.5, w_novel=0.8,
     )

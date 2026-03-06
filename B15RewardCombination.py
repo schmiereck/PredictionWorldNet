@@ -318,6 +318,12 @@ class RewardCombiner:
             goal_progress: float = 0.0,
             gemini_called: bool  = False,
     ) -> dict:
+        # Alle Reward-Komponenten auf [0, 1] normalisieren
+        r_intrinsic = float(np.clip(r_intrinsic, 0.0, 1.0))
+        r_visual    = float(np.clip(r_visual,    0.0, 1.0))
+        r_goal      = float(np.clip(r_goal,      0.0, 1.0))
+        r_action    = float(np.clip(r_action,    0.0, 1.0))
+
         r_total = (
                 self.w_intrinsic * r_intrinsic +
                 self.w_visual    * r_visual    +
