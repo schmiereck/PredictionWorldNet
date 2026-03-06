@@ -511,8 +511,10 @@ class Orchestrator:
 
         # ── Overhead Map ───────────────────────────────
         if OverheadMapView is not None:
+            # Trail-Länge auf sinnvolles Maximum begrenzen (unabhängig von n_steps)
+            trail_len = min(hist_len, 400)
             self.overhead = OverheadMapView(
-                map_size=30.0, trail_length=hist_len,
+                map_size=30.0, trail_length=trail_len,
                 title=f"Draufsicht  |  {self.cfg['mode'].upper()}"
             )
             self.overhead.setup()
@@ -607,6 +609,9 @@ class Orchestrator:
                     if self.strategy_gen is not None:
                         strategy = self.strategy_gen.generate(result['primary_goal'])
                         self.strategy_exec.set_strategy(strategy)
+                    # Trail beim Szenenwechsel löschen für übersichtliche Karte
+                    if self.overhead is not None:
+                        self.overhead.clear_trail()
             elif mode == "miniworld":
                 self._scene = "miniworld"
                 self._goal  = self.ml_system.current_goal

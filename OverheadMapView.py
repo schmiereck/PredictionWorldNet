@@ -570,6 +570,12 @@ class OverheadMapView:
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
 
+    def clear_trail(self):
+        """Löscht den Trail (z.B. beim Szenenwechsel)."""
+        self.trail.clear()
+        self.scene_visits.clear()
+        print("[OverheadMap] Trail gelöscht")
+
     def close(self):
         try:
             plt.figure("Draufsicht")
