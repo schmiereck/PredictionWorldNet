@@ -172,7 +172,8 @@ class OverheadMapView:
             ax.tick_params(colors='white')
 
         self.ax_info.axis('off')
-        plt.pause(0.001)
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
         return self
 
     def set_miniworld_env(self, env):
@@ -566,7 +567,8 @@ class OverheadMapView:
             bbox=dict(boxstyle='round', facecolor='#0d1b2a', alpha=0.9)
         )
 
-        plt.pause(0.001)
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
 
     def close(self):
         try:

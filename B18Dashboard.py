@@ -151,7 +151,8 @@ class TrainingDashboard:
         self.ax_cam.axis('off')
         self.ax_arc.axis('off')
 
-        plt.pause(0.01)
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
         return self
 
     def update(
@@ -640,7 +641,7 @@ class TrainingDashboard:
 
         # ── Immer: figure rendern ──────────────────
         self.fig.canvas.draw_idle()
-        plt.pause(0.001)
+        self.fig.canvas.flush_events()
 
     def close(self):
         try:
@@ -715,7 +716,7 @@ class TrainingDashboard:
                                    fontsize=8, color='white')
 
         self.fig.canvas.draw_idle()
-        plt.pause(0.001)
+        self.fig.canvas.flush_events()
 
 
 # ─────────────────────────────────────────────
