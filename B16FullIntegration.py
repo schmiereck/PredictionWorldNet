@@ -941,8 +941,8 @@ class IntegratedSystem:
         self.scheduler.step(l_recon.detach())
 
         kl_val = float(l_kl.detach())
-        # KL-Collapse-Warnung: KL < 0.1 nats → Encoder ignoriert Input
-        if kl_val < 0.1 and self.train_steps > 50:
+        # KL-Collapse-Warnung: KL < 0.01 nats → Encoder ignoriert Input
+        if kl_val < 0.01 and self.train_steps > 100:
             print(f"  ⚠️ KL-Collapse-Warnung: KL={kl_val:.4f} nats (Step {self.train_steps})")
 
         return {
