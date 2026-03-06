@@ -147,6 +147,12 @@ class OverheadMapView:
             figsize=(9, 8),
             num="Draufsicht"
         )
+        try:
+            tk_window = self.fig.canvas.manager.window
+            tk_window.attributes('-topmost', False)
+            self._tk_window = tk_window
+        except Exception:
+            self._tk_window = None
         self.fig.canvas.mpl_connect('close_event', lambda evt: setattr(self, '_window_closed', True))
         self.fig.patch.set_facecolor('#0d0d0d')
         self.fig.suptitle(self.title, fontsize=11,
