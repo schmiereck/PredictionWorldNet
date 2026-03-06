@@ -112,15 +112,19 @@ class MiniWorldFrameDataset(Dataset):
             _register_prediction_world_env(gym)
 
             env = gym.make(env_name, render_mode="rgb_array", view="agent")
-            obs, _ = env.reset()
 
             for i in range(n_frames):
-                # Zufällige Aktion (0=links, 1=rechts, 2=vorwärts)
-                action = env.action_space.sample()
-                obs, reward, terminated, truncated, info = env.step(action)
+                # Reset bei jedem Frame → neue Objektpositionen
+                obs, _ = env.reset()
 
-                if terminated or truncated:
-                    obs, _ = env.reset()
+                # Optional: 0-5 zufällige Steps für verschiedene Distanzen/Perspektiven
+                n_steps = np.random.randint(0, 6)
+                for _ in range(n_steps):
+                    action = env.action_space.sample()
+                    obs, _, terminated, truncated, _ = env.step(action)
+                    if terminated or truncated:
+                        obs, _ = env.reset()
+                        break
 
                 # Auf 128×128 skalieren
                 img_pil = PILImage.fromarray(obs).resize(
