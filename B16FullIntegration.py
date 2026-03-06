@@ -214,7 +214,8 @@ class TemporalTransformer(nn.Module):
             d_model=d_model, nhead=n_heads, dim_feedforward=256,
             dropout=0.1, batch_first=True, norm_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers,
+                                                  enable_nested_tensor=False)
         # Next-Latent-Prediction Head: context → predicted z_{t+1}
         self.next_z_head = nn.Linear(d_model, latent_dim)
 
