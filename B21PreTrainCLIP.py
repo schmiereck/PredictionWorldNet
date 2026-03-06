@@ -216,8 +216,8 @@ LABEL_DESCRIPTIONS = {
     "yellow": "a yellow box in the scene",
     "orange": "an orange box in the scene",
     "white":  "a white box in the scene",
-    "wall":   "a plain wall or corridor with no objects",
-    "empty":  "an empty room with nothing interesting",
+    "wall":   "a plain gray wall with no objects",
+    "empty":  "an empty room with a checkered floor visible",
 }
 
 def classify_frame(frame: np.ndarray) -> str:
@@ -253,7 +253,16 @@ def classify_frame(frame: np.ndarray) -> str:
         return best
 
     brightness = (mean_r + mean_g + mean_b) / 3.0
-    return "wall" if brightness > 0.25 else "empty"
+
+    # Floor-Erkennung: kariertes Schachbrettmuster im unteren Bilddrittel.
+    # Schachbrett → hohe lokale Varianz (abwechselnd hell/dunkel).
+    # Wand → gleichförmig grau → niedrige Varianz.
+    lower_third = f[85:, :, :]          # unteres Drittel (Zeilen 85–127)
+    floor_std   = np.std(lower_third)   # Schachbrett ≈ 0.3+, Wand ≈ 0.05–0.1
+
+    if floor_std > 0.15:
+        return "empty"   # karierter Boden sichtbar
+    return "wall"        # gleichförmige Wand oder Decke
 
 
 # ─────────────────────────────────────────────
