@@ -239,10 +239,12 @@ class TrainingDashboard:
                 "event":  gemini_event,
             })
 
-        # Latent-Space
+        # Latent-Space: goal als Label (wechselt, aussagekräftig);
+        # falls kein goal, scene als Fallback
         if latent_z is not None:
             self.latent_points.append(latent_z.copy())
-            self.latent_labels.append(scene)
+            lbl = goal.strip() if goal and goal.strip() else scene
+            self.latent_labels.append(lbl)
 
         steps_x = list(range(len(self.hist["fe"])))
 
@@ -487,18 +489,23 @@ class TrainingDashboard:
                 vals, vecs = np.linalg.eigh(cov)
                 idx    = np.argsort(vals)[::-1]
                 pc     = pts_c @ vecs[:, idx[:2]]
-                scene_map = {s: i for i, s in enumerate([
-                    "red_box","blue_ball","green_door","corridor","corner"
-                ])}
+                # Dynamische Farb-Map: nur Labels die tatsächlich vorkommen
+                unique_labels = list(dict.fromkeys(labels))  # Reihenfolge erhalten
+                label_to_idx  = {l: i for i, l in enumerate(unique_labels)}
+                n_labels      = max(len(unique_labels), 1)
                 colors_pca = plt.cm.tab10(
-                    [scene_map.get(l, 0)/5 for l in labels]
+                    [label_to_idx[l] / n_labels for l in labels]
                 )
                 self.ax_latent.scatter(
                     pc[:,0], pc[:,1], c=colors_pca, s=15, alpha=0.7)
-                for s, i in scene_map.items():
+                for l, i in label_to_idx.items():
+                    disp = l.replace("_"," ")
+                    # Lange Goal-Strings kürzen
+                    if len(disp) > 20:
+                        disp = disp[:18] + "…"
                     self.ax_latent.scatter(
-                        [], [], c=[plt.cm.tab10(i/5)],
-                        label=s.replace("_"," "), s=30)
+                        [], [], c=[plt.cm.tab10(i / n_labels)],
+                        label=disp, s=30)
                 self.ax_latent.legend(fontsize=5, loc='upper right')
             self.ax_latent.set_title('Latent-Space (PCA)',
                                      fontsize=9, color='white')
