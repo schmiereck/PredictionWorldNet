@@ -193,20 +193,22 @@ class MockStrategyGenerator(StrategyGenerator):
             Rule("target_left",     "turn_left",     duration=3,  priority=80),
             # Ziel rechts → nach rechts drehen
             Rule("target_right",    "turn_right",    duration=3,  priority=80),
-            # Nichts sichtbar → Kamera schwenken (kompletter Sweep: links→rechts→mitte)
-            Rule("no_target",       "scan_panorama", duration=16, priority=50),
-            # Kamera-Schwenk fertig → erst Kamera zentrieren
-            Rule("pan_done",        "center_camera", duration=3,  priority=45),
-            # Timeout → zufällig drehen
-            Rule("timeout",         "random_turn",   duration=4,  priority=30),
-            # Fallback: Wenn nichts anderes greift → Roboter langsam drehen
-            Rule("always",          "turn_left",     duration=5,  priority=25),
+            # Nichts sichtbar → Roboter drehen (Kamera bleibt vorne = kohärenter Bildstrom)
+            # scan_panorama vermieden: cam_pan-Geschwindigkeit erzeugt unzusammenhängende Bilder
+            Rule("no_target",       "turn_left",     duration=8,  priority=50),
+            # Kamera zentrieren falls sie versehentlich abgewichen ist
+            # duration=6: Servo braucht bei 0.35 rad/Step ~5 Steps von ±90° auf 0°
+            Rule("pan_done",        "center_camera", duration=6,  priority=45),
+            # Timeout → zufällig drehen (andere Richtung)
+            Rule("timeout",         "random_turn",   duration=5,  priority=30),
+            # Fallback: Weiterdrehen wenn sonst nichts greift
+            Rule("always",          "turn_left",     duration=4,  priority=25),
         ]
 
         return Strategy(
             goal=goal,
             rules=rules,
-            description=f"Standard-Suchstrategie: Scannen → Drehen → Annähern",
+            description="Standard-Suchstrategie: Drehen → Annähern (Kamera vorne)",
             source="mock",
         )
 
@@ -237,6 +239,10 @@ Antworte NUR mit JSON:
 
 Regeln mit höherer Priorität werden zuerst geprüft.
 Typisch: target_close (P100) > target_centered (P90) > target_left/right (P80) > no_target (P50) > pan_done (P40)
+
+Wichtiger Hinweis: Für no_target bevorzuge turn_left/turn_right statt scan_panorama.
+scan_panorama bewegt die Kamera schnell hin und her und erzeugt unzusammenhängende Bilder.
+Roboter-Drehung hält die Kamera vorne und gibt dem NN einen kohärenten Bildstrom.
 Erstelle 6-10 sinnvolle Regeln."""
 
 

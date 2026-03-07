@@ -200,8 +200,12 @@ class MiniWorldObsSource(_b17.ObservationSource):
         self._obs       = None
         self._frame     = 0
         self._available = False
-        self._cam_pan   = 0.0    # Kamera-Pan in rad (-1.57 .. +1.57)
-        self._cam_tilt  = 0.0    # Kamera-Tilt (für spätere Nutzung)
+        self._cam_pan        = 0.0    # Kamera-Pan aktuell in rad (-1.57 .. +1.57)
+        self._cam_pan_target = 0.0    # Zielwinkel (Servo-Simulation)
+        self._cam_tilt       = 0.0    # Kamera-Tilt (für spätere Nutzung)
+        # Servo-Geschwindigkeit: ~20°/Step (0.35 rad/Step)
+        # Entspricht einem physischen Pan-Tilt-Servo bei ~5 Hz Loop-Rate
+        self._CAM_PAN_SPEED  = 0.35   # rad pro Step
 
         try:
             import gymnasium as gym
@@ -313,8 +317,14 @@ class MiniWorldObsSource(_b17.ObservationSource):
         lx   = ros2["twist"]["linear"]["x"]
         az   = ros2["twist"]["angular"]["z"]
 
-        # Kamera-Pan/Tilt aus Aktion übernehmen (rad)
-        self._cam_pan  = float(ros2["camera"]["pan"])
+        # Kamera-Pan: Servo-Simulation — Ziel setzen, schrittweise annähern
+        # ROS2: "pan to X°" ist ein Positions-Befehl, kein Geschwindigkeitsbefehl.
+        # Anstatt sofort zu springen bewegt sich _cam_pan pro Step um max _CAM_PAN_SPEED
+        # auf _cam_pan_target zu → kohärente Zwischenbilder, physikalisch korrekt.
+        self._cam_pan_target = float(ros2["camera"]["pan"])
+        delta = self._cam_pan_target - self._cam_pan
+        step  = min(abs(delta), self._CAM_PAN_SPEED)
+        self._cam_pan += step if delta >= 0 else -step
         self._cam_tilt = float(ros2["camera"]["tilt"])
 
         # Kontinuierlich → diskret (Bewegung)
@@ -332,7 +342,8 @@ class MiniWorldObsSource(_b17.ObservationSource):
         if terminated or truncated:
             obs, _ = self._env.reset()
             self._obs = obs
-            self._cam_pan = 0.0    # Pan zurücksetzen bei Reset
+            self._cam_pan        = 0.0    # Pan zurücksetzen bei Reset
+            self._cam_pan_target = 0.0
 
     @property
     def obs_shape(self):
