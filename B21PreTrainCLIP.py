@@ -681,12 +681,12 @@ def main():
         help="MiniWorld Environment"
     )
     parser.add_argument(
-        "--frames", type=int, default=2000,
-        help="Anzahl Frames"
+        "--frames", type=int, default=3000,
+        help="Anzahl Frames (default: 3000)"
     )
     parser.add_argument(
-        "--epochs", type=int, default=100,
-        help="Trainings-Epochen"
+        "--epochs", type=int, default=60,
+        help="Trainings-Epochen (default: 60)"
     )
     args = parser.parse_args()
 
@@ -708,6 +708,12 @@ def main():
         ckpt_path = resolve_checkpoint(args.checkpoint)
         print(f"Lade Checkpoint: {ckpt_path}")
         ckpt = torch.load(ckpt_path, weights_only=False)
+        # Dimensions-Guard: Checkpoint inkompatibel wenn LATENT_DIM abweicht
+        ckpt_latent = ckpt.get("constants", {}).get("LATENT_DIM", LATENT_DIM)
+        if ckpt_latent != LATENT_DIM:
+            print(f"  ⚠ Checkpoint LATENT_DIM={ckpt_latent} ≠ {LATENT_DIM} "
+                  f"→ Encoder wird ignoriert (erst B20 neu ausführen).")
+            raise RuntimeError("Dimension mismatch")
         encoder.load_state_dict(ckpt["encoder"])
         print("  Encoder geladen ✓")
         if "goal_proj" in ckpt and ckpt["goal_proj"] is not None:
@@ -717,8 +723,8 @@ def main():
             except RuntimeError:
                 print("  goal_proj Architektur geändert → frisch initialisiert")
         print()
-    except FileNotFoundError:
-        print("WARNUNG: Kein Checkpoint gefunden!")
+    except (FileNotFoundError, RuntimeError):
+        print("WARNUNG: Kein kompatibler Checkpoint gefunden!")
         print("  Encoder hat zufällige Gewichte → erst B20 ausführen.")
         print()
 

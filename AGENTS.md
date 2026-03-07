@@ -19,13 +19,16 @@ mit intrinsischer Neugier und semantischem Gemini-API-Feedback.
 
 ## Globale Konstanten (B16FullIntegration.py)
 
-| Konstante    | Wert           | Beschreibung                          |
-|-------------|----------------|---------------------------------------|
-| OBS_SHAPE   | (128, 128, 3)  | RGB-Bild des Roboters                 |
-| LATENT_DIM  | 64             | Dimension des VAE-Latent-Raums        |
-| D_MODEL     | 128            | Transformer Hidden Dimension          |
-| ACTION_DIM  | 6              | Aktionsvektor-Dimension               |
-| CLIP_DIM    | 512            | CLIP-Embedding-Dimension              |
+| Konstante    | Wert           | Beschreibung                                          |
+|-------------|----------------|-------------------------------------------------------|
+| OBS_SHAPE   | (128, 128, 3)  | RGB-Bild des Roboters                                 |
+| LATENT_DIM  | 256            | Dimension des VAE-Latent-Raums (T16: war 64)          |
+| D_MODEL     | 256            | Transformer Hidden Dimension (T16: war 128, =LATENT_DIM) |
+| ACTION_DIM  | 6              | Aktionsvektor-Dimension                               |
+| CLIP_DIM    | 512            | CLIP-Embedding-Dimension                              |
+
+**Wichtig:** D_MODEL == LATENT_DIM (256). Das ist bewusst: `context[:, :LATENT_DIM]`
+im Goal-Loss greift auf den vollständigen Transformer-Output zu.
 
 **Aktionsvektor-Layout (6D):**
 `[linear_x, angular_z, cam_pan, cam_tilt, arc_radius, duration]`
@@ -36,8 +39,8 @@ mit intrinsischer Neugier und semantischem Gemini-API-Feedback.
 
 ### Encoder (VAE, 128×128 Input)
 
-5× Conv2d stride-2: 128→64→32→16→8→4
-Flatten: 128×4×4 = 2048 → fc_mu(64), fc_log_var(64) → z(64)
+5× Conv2d stride-2 mit GroupNorm (kein BatchNorm → kein Train/Eval-Drift):
+128×128 → 64→32→16→8→4, Flatten: 128×4×4 = 2048 → fc_mu(256), fc_log_var(256) → z(256)
 
 | Layer    | Channels | Output Spatial |
 |----------|----------|---------------|
@@ -47,8 +50,7 @@ Flatten: 128×4×4 = 2048 → fc_mu(64), fc_log_var(64) → z(64)
 | Conv2d-4 | 128→128  | 8×8           |
 | Conv2d-5 | 128→128  | 4×4           |
 
-Alle: kernel=3, stride=2, padding=1, BatchNorm, ReLU.
-log_var wird auf [-10, 10] geclampt.
+log_var wird auf [-10, 10] geclampt. GroupNorm(8, channels).
 
 **Achtung:** B04bVariationalEncoder.py hat nur 3 Conv-Layer (für 16×16 Input).
 B16 definiert seinen eigenen Encoder mit 5 Layers für 128×128.
@@ -56,8 +58,8 @@ Pretraining (B20/B21) nutzt den B16-Encoder.
 
 ### Decoder (128×128 Output)
 
-Linear(64→2048) → Reshape(128,4,4)
-5× ConvTranspose2d stride-2: 4→8→16→32→64→128, letztes Layer → Sigmoid
+Linear(256→2048) → Reshape(128,4,4)
+5× ConvTranspose2d stride-2 mit GroupNorm: 4→8→16→32→64→128, letztes → Sigmoid
 
 | Layer           | Channels | Output Spatial |
 |-----------------|----------|---------------|
@@ -70,26 +72,44 @@ Linear(64→2048) → Reshape(128,4,4)
 ### Temporal Transformer
 
 Token-Sequenz: [CLS, current_z, goal_emb, history_slots...]
-- CLS: Learnable Parameter (1, D_MODEL)
-- current_z: proj_cur Linear(64→128)
-- goal_emb: proj_goal Linear(512→128)
-- History: proj_hist Linear(64+6+64=134→128) pro Zeitslot
+- CLS: Learnable Parameter (1, D_MODEL=256)
+- current_z: proj_cur Linear(256→256)
+- goal_emb: proj_goal Linear(512→256)
+- History: proj_hist Linear(256+6+256=518→256) pro Zeitslot
 
-Transformer: n_heads=4, n_layers=2, dim_ff=256, dropout=0.1, batch_first=True
-Output: CLS-Token → context (128-dim)
+Transformer: n_heads=4, n_layers=3, dim_ff=512 (=2×D_MODEL), dropout=0.1,
+             batch_first=True, norm_first=True (Pre-Norm)
+Output: CLS-Token → context (256-dim)
 
-Zeitkodierung: Einfach `t/T` als Skalar auf alle Latent-Dims.
+**T10 – dynamics_head** (Action-konditioniertes Transitions-Modell):
+`dynamics_head = Sequential(Linear(256+6, 512), ReLU, Linear(512, 256))`
+Aufruf: `predict_next_z(context, action) → z_{t+1}`
+
+Zeitkodierung: `t/T` als Skalar auf alle Latent-Dims.
 
 ### Action Head
 
-context(128) → Linear(128→256)+LN+ReLU+Dropout → Linear(256→128)+LN+ReLU
+context(256) → Linear(256→256)+LN+ReLU+Dropout → Linear(256→128)+LN+ReLU
 → action_out: Linear(128→6)+Tanh → action ∈ [-1, 1]
 → sigma_out:  Linear(128→6)+Sigmoid → sigma ∈ [0, 1]
 
-### Goal Projection
+### Goal Projection (T09)
 
-`goal_proj = nn.Linear(512, 64, bias=False)`
-Projiziert CLIP-Text-Embedding (512-dim) in den Latent-Raum (64-dim).
+Zweistufige Projektion: `Sequential(Linear(512→128), ReLU, Linear(128→256))`
+Projiziert CLIP-Text-Embedding (512-dim) in den Latent-Raum (256-dim).
+
+### Reward Head (T14)
+
+`reward_head = Sequential(Linear(256+6, 128), ReLU, Linear(128,1), Sigmoid)`
+Schätzt Gemini-Reward aus Latent-State + Aktion.
+Training: dediziertes Gemini-only Mini-Batch (`require_gemini=True`).
+
+### Scene Head (T13)
+
+`scene_head = Sequential(Linear(256, 128), ReLU, Linear(128, 8))`
+Klassifiziert Szene in 8 Klassen (SCENE_VOCAB):
+`["red_box","yellow_box","orange_box","white_box","green_ball","blue_ball","exploring","unknown"]`
+Training: Cross-Entropy auf Gemini-Labels (deutsch+englisch via SCENE_LABEL_MAP).
 
 ---
 
@@ -98,16 +118,19 @@ Projiziert CLIP-Text-Embedding (512-dim) in den Latent-Raum (64-dim).
 ```
 MiniWorld Env (128×128 RGB)
     ↓
-Encoder → z(64), mu(64), log_var(64)
+Encoder → z(256), mu(256), log_var(256)
     ↓
-TemporalBuffer → z_hist(B,T,64), a_hist(B,T,6)
+TemporalBuffer → z_hist(B,T,256), a_hist(B,T,6)
     ↓
-Transformer(z_cur, goal_emb, z_hist, a_hist) → context(128)
+Transformer(z_cur, goal_emb, z_hist, a_hist) → context(256)
     ↓
-    ├→ Decoder(z) → pred_obs(128×128)  [Rekonstruktion]
+    ├→ Decoder(z) → pred_obs(128×128)           [Rekonstruktion]
     ├→ ActionHead(context) → action(6), sigma(6)
-    └→ goal_progress = cos_sim(context[:,:64], goal_proj(clip_goal))
-    
+    ├→ dynamics_head(context, action) → z_{t+1} [T10 World Model]
+    ├→ reward_head(z, action) → r_pred           [T14 Reward-Prädiktor]
+    ├→ scene_head(z) → scene_class(8)            [T13 Szenen-Beschreibung]
+    └→ goal_progress = cos_sim(context, goal_proj(clip_goal))
+
     ↓ Strategy-Blending (sigmoid auf sigma)
     ↓
 Final Action → MiniWorld Step oder ROS2 Twist
@@ -149,7 +172,18 @@ Gemini-Bewertung → StrategyGenerator.generate(goal) → Strategy(rules[])
 - Niedrige Unsicherheit → mehr NN
 
 **Conditions:** no_target, target_left/right/centered, target_close/far,
-pan_done, stuck, timeout, always
+pan_done, stuck, wall_stuck, boring_scene, timeout, always
+
+**wall_stuck:** `stuck_count >= threshold` UND `image_variance < 200.0` (Wand füllt Frame)
+**boring_scene:** `r_intr < 0.005` für ≥30 aufeinanderfolgende Steps
+
+**escape_wall-Aktion** (3 Phasen, 22 Steps):
+- Phase 1 (0–2): Stopp + Kamera geradeaus
+- Phase 2 (3–7): Rückwärts fahren
+- Phase 3 (8–21): Zufällig drehen (Richtung einmal gewählt)
+
+**obs_info-Keys für B23:**
+`image_nn, reward, r_intr, sigma, cam_pan, step`
 
 ---
 
@@ -263,20 +297,87 @@ PCA-Visualisierung braucht ≥5 Datenpunkte bevor sie rendert.
 {
     "encoder":      state_dict,     # B16 Encoder
     "decoder":      state_dict,     # B16 Decoder
-    "goal_proj":    state_dict,     # Linear(512→64), nach CLIP-Training
+    "transformer":  state_dict,     # TemporalTransformer inkl. dynamics_head (T10)
+    "action_head":  state_dict,
+    "goal_proj":    state_dict,     # Sequential(512→128→256) nach T09+T16
+    "reward_head":  state_dict,     # T14
+    "scene_head":   state_dict,     # T13
     "total_steps":  int,
     "train_steps":  int,
     "beta":         float,
-    "current_goal": str,            # "pretrain_vae" | "pretrain_clip" | ...
+    "current_goal": str,
     "tag":          str,
     "config":       dict,
-    "constants":    {"LATENT_DIM": 64, "D_MODEL": 128, "ACTION_DIM": 6},
+    "constants":    {"LATENT_DIM": 256, "D_MODEL": 256, "ACTION_DIM": 6},
     "result":       dict,           # VAE Training-Ergebnisse
     "result_clip":  dict,           # CLIP Training-Ergebnisse
 }
 ```
 B20 und B21 laden bestehenden Checkpoint und aktualisieren nur ihre Keys.
 Reihenfolge: B20 (VAE) → B21 (CLIP) → B19 (Live).
+
+**T16-Migrations-Guard:** `load_checkpoint()` prüft `constants.LATENT_DIM` und
+`constants.D_MODEL`. Bei Abweichung: Warnung + Rückgabe ohne Gewichte laden
+(Start mit zufälligen Initialisierungen → neues Pre-Training nötig).
+
+---
+
+## CSV-Logging (B16FullIntegration.py)
+
+Drei Log-Dateien pro Session in `logs/`, verknüpfbar über `total_step`:
+
+### `logs/steps_<timestamp>.csv`
+Jeder Env-Step (alle Schritte):
+
+| Spalte          | Beschreibung                                    |
+|-----------------|------------------------------------------------|
+| total_step      | Laufender Step-Zähler (Primärschlüssel)         |
+| r_intr          | Intrinsischer Reward (Prediction Error)         |
+| r_gemini        | Gemini-Reward (letzter bekannter Wert)          |
+| r_reward_pred   | Reward-Vorhersage aus reward_head (T14)         |
+| r_total         | Kombinierter Reward                             |
+| sigma_mean      | Mittlere NN-Unsicherheit                        |
+| novelty         | k-NN Novelty-Score                              |
+| scene_pred      | Szenen-Klasse aus scene_head (T13)              |
+| goal            | Aktuelles Ziel (Text)                           |
+| scene           | Szenen-Beschreibung (Gemini-Label)              |
+| gem_called      | 1 wenn Gemini in diesem Step aufgerufen wurde   |
+
+### `logs/train_<timestamp>.csv`
+Jeder Train-Step (nach je N Env-Steps):
+
+| Spalte      | Beschreibung                        |
+|-------------|-------------------------------------|
+| train_step  | Train-Step-Zähler                   |
+| total_step  | Zugehöriger Env-Step                |
+| fe          | Freie Energie (Gesamt-Loss)         |
+| recon       | Rekonstruktions-Loss (MSE+SSIM)     |
+| pred_img    | Next-Frame-Prediction-Loss          |
+| kl          | KL-Divergenz (mit FreeBits)         |
+| kl_raw      | KL ohne FreeBits                    |
+| action      | Action-Imitation-Loss               |
+| l_sigma     | Sigma NLL-Loss                      |
+| l_reward    | Reward-Prädiktor-Loss (T14)         |
+| l_scene     | Scene-Classification-Loss (T13)     |
+| goal_loss   | Goal-Alignment-Loss                 |
+| cam_center  | Kamera-Zentrierung-Loss             |
+| lr          | Lernrate                            |
+| beta        | Aktueller KL-Gewicht                |
+| grad_enc/dec/tr/ah/gp/rh/sh | Gradient-Normen pro Modul |
+
+### `logs/gemini_<timestamp>.csv`
+Nur bei Gemini-Aufrufen:
+
+| Spalte           | Beschreibung                              |
+|------------------|------------------------------------------|
+| total_step       | Schritt des Aufrufs                       |
+| reward           | Gemini-Reward [0,1]                       |
+| goal_progress    | Fortschritt zum Ziel [0,1]                |
+| situation        | Situationsbeschreibung (Text)             |
+| recommendation   | Empfohlene Aktion (Text)                  |
+| action_hint      | Konkrete Aktionsrichtung                  |
+| training_label   | Label für scene_head (T13)                |
+| goal             | Aktuelles Ziel                            |
 
 ---
 
@@ -294,9 +395,26 @@ google-genai, Pillow, pyopengl
 
 ## Bekannte Probleme / TODOs
 
-Siehe `TODO.md` für priorisierte Verbesserungsliste (T01–T11).
-Wichtigste offene Punkte:
-- T01: r_goal Bereich [0,2] statt [0,1] (Reward-Imbalance)
-- T03: Transformer-Loss nicht task-aligned
+Siehe `TODO.md` für priorisierte Verbesserungsliste.
+
+**Implementiert (erledigt):**
+- T01: Reward-Normalisierung (alle Rewards [0,1])
+- T03: Transformer-Loss → Next-Latent-Prediction
+- T04: Sigma-Loss NLL
+- T05: Cosine Beta-Annealing
+- T06: SSIM Perceptual Loss
+- T07: HSV-Farberkennung (robust gegen Beleuchtung)
+- T09: Zweistufige CLIP-Projektion (512→128→256)
+- T10: Action-konditioniertes Transitions-Modell (dynamics_head)
+- T13: Semantischer Scene-Description-Head
+- T14: Reward-Prädiktor im Latent-Raum
+- T16: LATENT_DIM/D_MODEL 64/128 → 256/256
+
+**Offen:**
+- T11: EFE als Aktions-Auswahlprinzip (nach T14)
+- T12: GRU-Weltzustand (RSSM, DreamerV3-Stil)
+- T15: Mehrstufige Imagination (nach T12+T14)
+- T17: Offline Dynamics-Vortraining
+- T18: FE-Dashboard-Erweiterung
 - `_register_pw_env()` 4× dupliziert
 - B04b/B07/B08/B09 Standalone-Module divergieren von B16-Versionen

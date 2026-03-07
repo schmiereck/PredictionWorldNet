@@ -238,6 +238,34 @@ In 120-Step-Demo: l_scene fällt von 2.05 auf ~1.3 mit nur 3 Gemini-Samples.
 
 ---
 
+---
+
+### T16 (neu) – LATENT_DIM/D_MODEL 64/128 → 256/256 ✅ ERLEDIGT
+
+**Problem:** 64-dim Latent-Raum ist zu schmal für Szenen mit 6 Objekten,
+Kamera-Orientierung, Ziel-Embedding und Dynamics.
+
+**Lösung:**
+- [x] `LATENT_DIM = 256` in B16FullIntegration.py (war 64)
+- [x] `D_MODEL = 256` gleichzeitig (war 128) — muss = LATENT_DIM sein wegen `context[:, :LATENT_DIM]` im Goal-Loss
+- [x] `dim_feedforward = d_model * 2 = 512` (skaliert mit D_MODEL, war hardcoded 256)
+- [x] `dynamics_head`: Intermediate `d_model * 2 = 512` (war hardcoded 256)
+- [x] B20/B21 importieren LATENT_DIM aus B16 → automatisch aktualisiert
+- [x] Dimensions-Guard in `load_checkpoint()`: prüft `constants.LATENT_DIM/D_MODEL`,
+  warnt bei Mismatch und überspringt Gewichte gracefully (kein Crash)
+
+**Konsequenz:** Alte Checkpoints (LATENT_DIM=64) werden automatisch erkannt und
+übersprungen. Neues Pre-Training mit B20 → B21 nötig.
+
+**Parameteranzahl (neu):**
+- Encoder: 2048→256 (fc_mu/log_var je +100% Parameter)
+- dynamics_head: Linear(262→512→256) statt Linear(134→256→64)
+- ActionHead: Linear(256→256→128) statt Linear(128→256→128)
+
+**Dateien:** `B16FullIntegration.py`
+
+---
+
 ## Abhängigkeiten
 
 ```

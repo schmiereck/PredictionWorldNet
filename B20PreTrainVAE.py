@@ -56,6 +56,7 @@ _b16 = _load_module("B16FullIntegration.py")
 Encoder    = _b16.Encoder
 Decoder    = _b16.Decoder
 LATENT_DIM = _b16.LATENT_DIM
+D_MODEL    = _b16.D_MODEL
 draw_scene = _b16.draw_scene
 SCENE_TYPES = _b16.SCENE_TYPES
 
@@ -184,11 +185,11 @@ def pretrain_vae(
         encoder: Encoder,
         decoder: Decoder,
         dataset: Dataset,
-        epochs: int = 50,
+        epochs: int = 60,
         batch_size: int = 32,
-        lr: float = 1e-3,
-        beta_max: float = 0.01,
-        beta_warmup_epochs: int = 10,
+        lr: float = 5e-4,
+        beta_max: float = 0.005,
+        beta_warmup_epochs: int = 20,
 ):
     """
     Trainiert Encoder + Decoder (VAE) rein auf Rekonstruktion.
@@ -307,20 +308,20 @@ def main():
         help="MiniWorld Environment (nur bei --source miniworld)"
     )
     parser.add_argument(
-        "--frames", type=int, default=2000,
-        help="Anzahl Frames zum Sammeln"
+        "--frames", type=int, default=4000,
+        help="Anzahl Frames zum Sammeln (default: 4000)"
     )
     parser.add_argument(
-        "--epochs", type=int, default=50,
-        help="Anzahl Trainings-Epochen"
+        "--epochs", type=int, default=60,
+        help="Anzahl Trainings-Epochen (default: 60)"
     )
     parser.add_argument(
         "--batch-size", type=int, default=32,
-        help="Batch-Größe"
+        help="Batch-Größe (default: 32)"
     )
     parser.add_argument(
-        "--lr", type=float, default=1e-3,
-        help="Lernrate"
+        "--lr", type=float, default=5e-4,
+        help="Lernrate (default: 5e-4)"
     )
     parser.add_argument(
         "--checkpoint", type=str, default=None,
@@ -399,7 +400,7 @@ def main():
                                   "epochs": args.epochs, "lr": args.lr}
     checkpoint["constants"]    = {
         "LATENT_DIM": LATENT_DIM,
-        "D_MODEL":    128,
+        "D_MODEL":    D_MODEL,
         "ACTION_DIM": 6,
     }
     checkpoint["tag"]          = "pretrain_vae"

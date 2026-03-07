@@ -89,8 +89,8 @@ ACTION_BOUNDS = {
     "arc_radius":  (-2.0,  2.0),
     "duration":    (0.1,   2.0),
 }
-LATENT_DIM  = 64
-D_MODEL     = 128
+LATENT_DIM  = 256   # T16: 64 → 256 (reicherer Zustandsraum)
+D_MODEL     = 256   # T16: 128 → 256 (=LATENT_DIM, damit context[:,:LATENT_DIM] passt)
 OBS_SHAPE   = (128, 128, 3)
 
 # T13: Szenen-Vokabular für den Beschreibungs-Kopf (scene_head)
@@ -237,7 +237,7 @@ class TemporalTransformer(nn.Module):
         self.proj_goal   = nn.Linear(512, d_model)
         self.proj_hist   = nn.Linear(latent_dim + action_dim + latent_dim, d_model)
         encoder_layer    = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=n_heads, dim_feedforward=256,
+            d_model=d_model, nhead=n_heads, dim_feedforward=d_model*2,
             dropout=0.1, batch_first=True, norm_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers,
@@ -247,9 +247,9 @@ class TemporalTransformer(nn.Module):
         # Jetzt:  dynamics_head(cat([context, a_t]))             [explizit konditioniert]
         # Das Modell lernt: "Was sehe ich NACH Aktion a_t?" – echter World-Model-Kern.
         self.dynamics_head = nn.Sequential(
-            nn.Linear(d_model + action_dim, 256),
+            nn.Linear(d_model + action_dim, d_model * 2),
             nn.ReLU(True),
-            nn.Linear(256, latent_dim),
+            nn.Linear(d_model * 2, latent_dim),
         )
 
     def forward(self, z_cur, goal_emb, z_hist=None, a_hist=None):
@@ -774,6 +774,17 @@ class IntegratedSystem:
             raise FileNotFoundError(f"Checkpoint nicht gefunden: {path}")
 
         checkpoint = torch.load(path, weights_only=False)
+
+        # T16: Dimensions-Guard — Checkpoint inkompatibel wenn LATENT_DIM/D_MODEL abweicht
+        ckpt_consts = checkpoint.get("constants", {})
+        ckpt_latent = ckpt_consts.get("LATENT_DIM", LATENT_DIM)
+        ckpt_dmodel = ckpt_consts.get("D_MODEL", D_MODEL)
+        if ckpt_latent != LATENT_DIM or ckpt_dmodel != D_MODEL:
+            print(f"  ⚠ Checkpoint-Dimensionen ({ckpt_latent}/{ckpt_dmodel}) passen nicht "
+                  f"zum Modell ({LATENT_DIM}/{D_MODEL}) — Modellgewichte werden übersprungen.")
+            print(f"    Für T16 bitte B20/B21 neu vortrainieren.")
+            # Trainings-Metadaten NICHT laden (falscher Checkpoint)
+            return {"tag": "", "steps": 0, "config": {}, "constants": ckpt_consts}
 
         # Modell-Gewichte laden
         self.encoder.load_state_dict(

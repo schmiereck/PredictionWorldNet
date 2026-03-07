@@ -148,17 +148,7 @@ EFE(a_t) += r_{t+1} + sigma(z_{t+1}) # EFE akkumulieren
 
 ---
 
-### T16 – LATENT_DIM 64 → 256
-**Warum:** 64 Dimensionen für eine Szene mit 6 Objekten, Kamera-Orientierung,
-Ziel-Embedding und Dynamics ist zu klein. 256 erlaubt strukturiertere
-Repräsentationen ohne Architektur-Änderung.
-
-**Konsequenz:** Bestehende Checkpoints werden inkompatibel (neues Pre-Training nötig).
-Daher als eigener Milestone behandeln – gemeinsam mit T12 oder T10 einführen.
-
-**Dateien:** `B16FullIntegration.py` (Konstante LATENT_DIM), `B20PreTrainVAE.py`,
-`B21PreTrainCLIP.py`
-**Aufwand:** Sehr Klein (Konstante) | **Nutzen:** Mittel-Hoch
+### T16 – LATENT_DIM 64 → 256 ✅ ERLEDIGT → DONE.md
 
 ---
 
@@ -232,4 +222,4 @@ T18  FE-Dashboard                            ← Begleitend zu T11/T15
 | Semantik-Kopf           | P(label\|s) – Szene beschreiben   | ✅ T13       |      |
 | Reward-Prädiktor        | Pragmatischer Prior P(o\|bevorzugt)| ✅ T14       |      |
 | Imagination             | Planning-as-Inference              | ❌ fehlt     | T15  |
-| Größerer Latent         | Reicherer Zustandsraum             | ❌ fehlt     | T16  |
+| Größerer Latent         | Reicherer Zustandsraum             | ✅ T16       |      |
