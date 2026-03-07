@@ -568,6 +568,9 @@ class OverheadMapView:
                              linestyle='--', label='Tilt')
             self.ax_cam.fill_between(xs, list(self.cam_tilt_hist), 0,
                                      alpha=0.1, color='#ff9944')
+            self.ax_cam.legend(fontsize=6, loc='upper left',
+                               facecolor='#0d1b2a', labelcolor='white',
+                               framealpha=0.7)
         self.ax_cam.axhline(0,   color='gray',  linewidth=0.6, alpha=0.5)
         self.ax_cam.axhline( 45, color='white', linewidth=0.4,
                              linestyle=':', alpha=0.3)
@@ -579,9 +582,6 @@ class OverheadMapView:
             fontsize=8, color='white')
         self.ax_cam.tick_params(colors='white', labelsize=6)
         self.ax_cam.set_ylabel('°', fontsize=7, color='white')
-        self.ax_cam.legend(fontsize=6, loc='upper left',
-                           facecolor='#0d1b2a', labelcolor='white',
-                           framealpha=0.7)
 
         # ── Info-Zeile ─────────────────────────────────
         self.ax_info.clear(); self.ax_info.axis('off')

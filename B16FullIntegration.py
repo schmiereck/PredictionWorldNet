@@ -900,7 +900,11 @@ class IntegratedSystem:
 
         # Losses
         l_recon  = combined_recon_loss(recon, obs, ssim_weight=0.3)
-        l_kl     = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
+        # Free-Bits KL: Dimensionen unter 0.5 nats erhalten keinen Penalty-Gradienten.
+        # Verhindert Posterior-Collapse: Encoder kann Dimensionen nutzen ohne
+        # durch KL-Druck auf Prior N(0,1) gezwungen zu werden.
+        kl_per_dim = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())  # (B, LATENT_DIM)
+        l_kl       = torch.clamp(kl_per_dim, min=0.5).mean()
         # Action-Loss: Kamera-Dimensionen (2=pan, 3=tilt) stark downgewichtet,
         # da strategie-dominierte Trainingsdaten sonst einen Links-Bias einlernen.
         action_weights = torch.tensor(
@@ -965,9 +969,11 @@ class IntegratedSystem:
         self.scheduler.step(l_recon.detach())
 
         kl_val = float(l_kl.detach())
-        # KL-Collapse-Warnung: KL < 0.01 nats → Encoder ignoriert Input
-        if kl_val < 0.01 and self.train_steps > 100:
-            print(f"  ⚠️ KL-Collapse-Warnung: KL={kl_val:.4f} nats (Step {self.train_steps})")
+        # Mit Free-Bits ist l_kl >= 0.5 (Clamp-Floor). Warnung wenn unerwarteter Collapse.
+        # Echter KL-Wert (ohne Free-Bits-Offset) für Monitoring:
+        kl_raw = float((-0.5 * (1 + log_var - mu.pow(2) - log_var.exp())).mean().detach())
+        if kl_raw < 0.01 and self.train_steps > 100:
+            print(f"  ⚠️ KL-Collapse-Warnung: KL_raw={kl_raw:.4f} nats (Step {self.train_steps})")
 
         return {
             "fe":     float(fe.detach()),
