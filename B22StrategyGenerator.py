@@ -193,14 +193,14 @@ class MockStrategyGenerator(StrategyGenerator):
             Rule("target_left",     "turn_left",     duration=3,  priority=80),
             # Ziel rechts → nach rechts drehen
             Rule("target_right",    "turn_right",    duration=3,  priority=80),
-            # Nichts sichtbar → Roboter drehen (Kamera bleibt vorne = kohärenter Bildstrom)
-            # scan_panorama vermieden: cam_pan-Geschwindigkeit erzeugt unzusammenhängende Bilder
-            Rule("no_target",       "turn_left",     duration=8,  priority=50),
+            # Timeout → Vorwärts fahren (höher als no_target, bricht Dreh-Schleife auf)
+            # Ohne diese Regel dreht der Roboter ewig (no_target immer wahr, stuck erkennt Drehen nicht)
+            Rule("timeout",         "move_forward",  duration=10, priority=75),
+            # Nichts sichtbar → Roboter kurz drehen (Kamera bleibt vorne = kohärenter Bildstrom)
+            Rule("no_target",       "turn_left",     duration=4,  priority=50),
             # Kamera zentrieren falls sie versehentlich abgewichen ist
             # duration=6: Servo braucht bei 0.35 rad/Step ~5 Steps von ±90° auf 0°
             Rule("pan_done",        "center_camera", duration=6,  priority=45),
-            # Timeout → zufällig drehen (andere Richtung)
-            Rule("timeout",         "random_turn",   duration=5,  priority=30),
             # Fallback: Weiterdrehen wenn sonst nichts greift
             Rule("always",          "turn_left",     duration=4,  priority=25),
         ]

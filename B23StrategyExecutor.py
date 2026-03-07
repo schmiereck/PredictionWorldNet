@@ -42,7 +42,7 @@ class ConditionEvaluator:
     def __init__(self,
                  target_color: str = "red",
                  stuck_threshold: int = 15,
-                 timeout_steps: int = 50):
+                 timeout_steps: int = 20):
         self.target_color     = target_color
         self.stuck_threshold  = stuck_threshold
         self.timeout_steps    = timeout_steps
@@ -342,6 +342,10 @@ class StrategyExecutor:
                 # Spezialbehandlung: escape_wall (Drehrichtung zufällig wählen)
                 if rule.action == "escape_wall":
                     self._escape_turn_dir = float(np.random.choice([-1.0, 1.0]))
+
+                # Spezialbehandlung: timeout – Counter zurücksetzen damit keine Endlosschleife
+                if rule.condition == "timeout":
+                    self._evaluator._no_progress_count = 0
 
                 self._current_action_vec = vec
 
