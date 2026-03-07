@@ -327,7 +327,8 @@ class MiniWorldObsSource(_b17.ObservationSource):
         self._cam_pan += step if delta >= 0 else -step
         # Grad → Bogenmass (ros2["camera"]["tilt"] ist in Grad, agent.cam_pitch erwartet
         # den Wert in Grad NACH Multiplikation mit 180/π — also hier Grad→rad konvertieren)
-        self._cam_tilt = float(ros2["camera"]["tilt"]) * math.pi / 180.0
+        import math as _math
+        self._cam_tilt = float(ros2["camera"]["tilt"]) * _math.pi / 180.0
 
         # Kontinuierlich → diskret (Bewegung)
         if abs(az) > abs(lx):
@@ -422,6 +423,10 @@ class Orchestrator:
 
         # Letztes Gemini-Hochreis-Bild (persistiert zwischen Updates)
         self._last_gemini_image = None
+
+        # Letztes Gemini-Event seit dem letzten Dashboard-Update (damit kein Event verloren geht
+        # wenn Gemini auf einem Nicht-Display-Step feuert)
+        self._pending_gemini_event = None
 
         # Setup-Status: verhindert Checkpoint-Schreiben bei vorzeitigem Schließen
         self._setup_complete = False
@@ -748,6 +753,7 @@ class Orchestrator:
                 print(f"             Situation:  {ass.get('situation','')}")
                 print(f"             Empfehlung: {ass.get('recommendation','')}")
                 gemini_event = ass
+                self._pending_gemini_event = ass   # für nächstes Dashboard-Update merken
             else:
                 gemini_event = None
 
@@ -798,6 +804,10 @@ class Orchestrator:
                     except Exception as _e:
                         recognition_scores = None
 
+                # Pending-Event nutzen (enthält auch Events von Nicht-Display-Steps)
+                dashboard_gemini = self._pending_gemini_event
+                self._pending_gemini_event = None
+
                 self.dashboard.update(
                     obs=display_obs,
                     pred=ml_result["pred_obs"],
@@ -813,7 +823,7 @@ class Orchestrator:
                         "lr":              self.ml_system.optimizer.param_groups[0]["lr"],
                         "gemini_interval": m["gemini_interval"][-1] if m["gemini_interval"] else 0,
                     },
-                    gemini_event=gemini_event,
+                    gemini_event=dashboard_gemini,
                     latent_z=ml_result.get("latent_z"),
                     scene=self._scene,
                     goal=self.ml_system.current_goal,
