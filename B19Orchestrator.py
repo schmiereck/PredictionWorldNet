@@ -247,17 +247,22 @@ class MiniWorldObsSource(_b17.ObservationSource):
             return img[::img.shape[0]//h, ::img.shape[1]//w, :][:h,:w,:]
 
     def _render_with_pan(self):
-        """Rendert Bild mit simuliertem Kamera-Pan.
+        """Rendert Bild mit simuliertem Kamera-Pan und Kamera-Tilt.
 
-        Dreht agent.dir temporär um den Pan-Winkel, rendert,
-        und setzt die Richtung zurück. So sieht die Kamera zur Seite
-        während der Roboter geradeaus fährt.
+        Pan:  Dreht agent.dir temporär um den Pan-Winkel (horizontal).
+        Tilt: Setzt agent.cam_pitch temporär (vertikal, in Grad).
+              Positiv = nach oben, negativ = nach unten.
+        Beide Werte werden nach dem Rendern wiederhergestellt.
         """
+        import math
         agent = self._env.unwrapped.agent
-        original_dir = agent.dir
-        agent.dir = original_dir - self._cam_pan  # positive pan = nach rechts
+        original_dir   = agent.dir
+        original_pitch = agent.cam_pitch
+        agent.dir       = original_dir - self._cam_pan          # positive pan = nach rechts
+        agent.cam_pitch = self._cam_tilt * 180.0 / math.pi     # rad → Grad
         obs = self._env.unwrapped.render_obs()
-        agent.dir = original_dir
+        agent.dir       = original_dir
+        agent.cam_pitch = original_pitch
         return obs
 
     def get_observation(self) -> _b17.Observation:
