@@ -134,6 +134,10 @@ class OverheadMapView:
         self.cam_pan_rad  = 0.0
         self.cam_tilt_rad = 0.0
 
+        # Kamera-Verlauf (für Pan/Tilt-Plot)
+        self.cam_pan_hist  = deque(maxlen=trail_length)
+        self.cam_tilt_hist = deque(maxlen=trail_length)
+
         # MiniWorld Environment (optional, für echte Wände/Objekte)
         self._mw_env = None
 
@@ -159,15 +163,16 @@ class OverheadMapView:
                           fontweight='bold', color='white')
 
         gs = self.fig.add_gridspec(
-            3, 2, height_ratios=[5, 1.5, 1.5],
-            hspace=0.4, wspace=0.3
+            3, 3, height_ratios=[5, 1.5, 1.5],
+            hspace=0.4, wspace=0.35
         )
         self.ax      = self.fig.add_subplot(gs[0, :])
         self.ax_dist = self.fig.add_subplot(gs[1, 0])
         self.ax_rot  = self.fig.add_subplot(gs[1, 1])
+        self.ax_cam  = self.fig.add_subplot(gs[1, 2])
         self.ax_info = self.fig.add_subplot(gs[2, :])
 
-        for ax in [self.ax, self.ax_dist, self.ax_rot, self.ax_info]:
+        for ax in [self.ax, self.ax_dist, self.ax_rot, self.ax_cam, self.ax_info]:
             ax.set_facecolor('#111111')
             ax.tick_params(colors='white')
 
@@ -332,6 +337,8 @@ class OverheadMapView:
         cam = action_ros2.get("camera", {})
         self.cam_pan_rad  = cam.get("pan",  0.0)
         self.cam_tilt_rad = cam.get("tilt", 0.0)
+        self.cam_pan_hist.append(self.cam_pan_rad  * 180.0 / np.pi)
+        self.cam_tilt_hist.append(self.cam_tilt_rad * 180.0 / np.pi)
 
         # Trail + Szenen-Visits
         self.trail.append((self.pose.x, self.pose.y, self.pose.heading, scene))
@@ -545,6 +552,37 @@ class OverheadMapView:
                               fontsize=8, color='white')
         self.ax_rot.tick_params(colors='white', labelsize=6)
 
+        # ── Kamera Pan / Tilt Verlauf ───────────────────
+        self.ax_cam.clear()
+        self.ax_cam.set_facecolor('#111111')
+        pan_deg  = self.cam_pan_rad  * 180.0 / np.pi
+        tilt_deg = self.cam_tilt_rad * 180.0 / np.pi
+        if len(self.cam_pan_hist) >= 2:
+            xs = range(len(self.cam_pan_hist))
+            self.ax_cam.plot(xs, list(self.cam_pan_hist),
+                             color='cyan', linewidth=1.3, label='Pan')
+            self.ax_cam.fill_between(xs, list(self.cam_pan_hist), 0,
+                                     alpha=0.15, color='cyan')
+            self.ax_cam.plot(xs, list(self.cam_tilt_hist),
+                             color='#ff9944', linewidth=1.3,
+                             linestyle='--', label='Tilt')
+            self.ax_cam.fill_between(xs, list(self.cam_tilt_hist), 0,
+                                     alpha=0.1, color='#ff9944')
+        self.ax_cam.axhline(0,   color='gray',  linewidth=0.6, alpha=0.5)
+        self.ax_cam.axhline( 45, color='white', linewidth=0.4,
+                             linestyle=':', alpha=0.3)
+        self.ax_cam.axhline(-45, color='white', linewidth=0.4,
+                             linestyle=':', alpha=0.3)
+        self.ax_cam.set_ylim(-95, 95)
+        self.ax_cam.set_title(
+            f'Kamera  Pan={pan_deg:+.0f}°  Tilt={tilt_deg:+.0f}°',
+            fontsize=8, color='white')
+        self.ax_cam.tick_params(colors='white', labelsize=6)
+        self.ax_cam.set_ylabel('°', fontsize=7, color='white')
+        self.ax_cam.legend(fontsize=6, loc='upper left',
+                           facecolor='#0d1b2a', labelcolor='white',
+                           framealpha=0.7)
+
         # ── Info-Zeile ─────────────────────────────────
         self.ax_info.clear(); self.ax_info.axis('off')
         pan_deg  = self.cam_pan_rad  * 180/np.pi
@@ -571,11 +609,13 @@ class OverheadMapView:
         self.fig.canvas.flush_events()
 
     def clear_trail(self):
-        """Löscht den Trail und Gemini-Markierungen (z.B. beim Szenenwechsel)."""
+        """Löscht den Trail, Gemini-Markierungen und Kamera-Verlauf (z.B. beim Szenenwechsel)."""
         self.trail.clear()
         self.scene_visits.clear()
         self.gemini_pts.clear()
-        print("[OverheadMap] Trail + Gemini-Calls gelöscht")
+        self.cam_pan_hist.clear()
+        self.cam_tilt_hist.clear()
+        print("[OverheadMap] Trail + Gemini-Calls + Kamera-Verlauf gelöscht")
 
     def close(self):
         try:
