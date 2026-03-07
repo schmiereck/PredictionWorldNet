@@ -152,33 +152,11 @@ EFE(a_t) += r_{t+1} + sigma(z_{t+1}) # EFE akkumulieren
 
 ---
 
-### T17 – Offline-Vortraining der Dynamics
-**Warum:** Das Dynamics-Modell (T10) braucht am Anfang viele (z_t, a_t, z_{t+1})-Paare
-zum Lernen. Diese können aus bereits gesammelten Replay-Buffer-Daten gewonnen werden –
-ohne Live-Training.
-
-**Lösung:** Neues Script `B24PreTrainDynamics.py`:
-```
-Sammle N Episoden in MiniWorld → speichere (obs, action, next_obs)
-Trainiere offline: Encoder(obs)=z, Encoder(next_obs)=z_next
-Loss: dynamics(z, a) → z_next
-```
-
-**Voraussetzung:** T10
-**Dateien:** Neues `B24PreTrainDynamics.py`
-**Aufwand:** Mittel | **Nutzen:** Mittel (beschleunigt T10-Konvergenz)
+### T17 – Offline-Vortraining der Dynamics ✅ ERLEDIGT → DONE.md
 
 ---
 
-### T18 – Free Energy Dashboard-Erweiterung
-**Warum:** Das Dashboard soll die Active Inference Prinzipien sichtbar machen,
-nicht nur Loss-Kurven. Sichtbar machen:
-- FE-Zerlegung: Complexity (KL) vs. Inaccuracy (Recon + Pred)
-- EFE nach Einführung von T11: Epistemisch vs. Pragmatisch
-- Imagination-Qualität (wie gut stimmen imaginierte und echte Zustände überein)
-
-**Dateien:** `B18Dashboard.py`
-**Aufwand:** Klein | **Nutzen:** Mittel (Interpretierbarkeit)
+### T18 – Free Energy Dashboard-Erweiterung ✅ ERLEDIGT → DONE.md
 
 ---
 
@@ -223,3 +201,5 @@ T18  FE-Dashboard                            ← Begleitend zu T11/T15
 | Reward-Prädiktor        | Pragmatischer Prior P(o\|bevorzugt)| ✅ T14       |      |
 | Imagination             | Planning-as-Inference              | ❌ fehlt     | T15  |
 | Größerer Latent         | Reicherer Zustandsraum             | ✅ T16       |      |
+| Offline Dynamics        | Vortraining dynamics_head          | ✅ T17       |      |
+| FE Dashboard            | Complexity/Inaccuracy sichtbar     | ✅ T18       |      |

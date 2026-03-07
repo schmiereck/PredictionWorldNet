@@ -266,6 +266,41 @@ Kamera-Orientierung, Ziel-Embedding und Dynamics.
 
 ---
 
+### T17 (neu) – Offline-Vortraining der Dynamics ✅ ERLEDIGT
+
+**Lösung:**
+- [x] Neues Script `B24PreTrainDynamics.py`
+- [x] Sammelt (obs, action, next_obs)-Paare aus MiniWorld (400 Episoden × 25 Steps)
+- [x] Encoder eingefroren; nur `dynamics_head` wird trainiert
+- [x] Loss: `MSE(dynamics_head(cat([z_cur, action])), z_next.detach())`
+- [x] `z_cur` (256-dim) als Context-Ersatz valide, da LATENT_DIM == D_MODEL == 256 (T16)
+- [x] Defaults: 40 Epochs, lr=3e-4; 60% move_forward / 20% turn_left / 20% turn_right
+- [x] Speichert aktualisierten Checkpoint (transformer/dynamics_head state)
+- [x] Pre-Training-Pipeline: B20 → B21 → B24 → B19
+
+**Dateien:** `B24PreTrainDynamics.py` (neu)
+
+---
+
+### T18 (neu) – Free Energy Dashboard-Erweiterung ✅ ERLEDIGT
+
+**Lösung:**
+- [x] `ax_fe` Panel: gestapelte Flächen (stacked areas) statt einfacher FE-Kurve
+  - Complexity (β·KL, darkorange)
+  - Inaccuracy (Recon+Pred, steelblue)
+  - Residual (mediumpurple)
+  - Total FE weiße Linie + MA-20 rot gestrichelt
+- [x] EFE-Proxy in `ax_stats`: Epistemic (sigma_mean) vs. Pragmatisch (r_reward_pred)
+  farbiges Label: ERKUNDEN (σ>0.5) / ZIEL NÄHERN (r_rp>0.6) / AUSGEWOGEN
+- [x] `r_reward_pred` als gepunktete violette Linie im Rewards-Panel
+- [x] `scene_pred` (T13) im `ax_recog`-Titel angezeigt
+- [x] hist-Keys ergänzt: `r_reward_pred`, `l_pred_img`, `l_reward`, `l_scene`, `complexity`, `inaccuracy`
+- [x] `run_demo()` aktualisiert: latent 256-dim, neue Mock-Metriken
+
+**Dateien:** `B18Dashboard.py`
+
+---
+
 ## Abhängigkeiten
 
 ```

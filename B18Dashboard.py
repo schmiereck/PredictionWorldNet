@@ -64,10 +64,14 @@ class TrainingDashboard:
         # Ringpuffer für alle Metriken
         self.hist = {k: deque(maxlen=max_history) for k in [
             "fe", "recon", "kl", "action",
-            "r_intrinsic", "r_gemini", "r_total",
+            "r_intrinsic", "r_gemini", "r_total", "r_reward_pred",
             "goal_progress", "pred_error",
             "gemini_interval", "beta", "lr",
             "sigma_mean", "strategy_blend",
+            # T18: neue Metriken aus T10/T13/T14
+            "l_pred_img", "l_reward", "l_scene",
+            "complexity",   # T18: beta * KL  (Complexity-Term der FE)
+            "inaccuracy",   # T18: recon + l_pred_img  (Inaccuracy-Term der FE)
         ]}
 
         # Gemini-Events (Step + Inhalt)
@@ -82,6 +86,7 @@ class TrainingDashboard:
         self._last_pred = None
         self._last_goal = ""
         self._last_scene = ""
+        self._last_scene_pred = "?"   # T13: Szenen-Klasse aus scene_head
 
         # Strategie-Info
         self._last_strategy_rule = None
@@ -202,6 +207,18 @@ class TrainingDashboard:
         if sigma is not None:
             sigma_mean = float(np.mean(sigma))
             self.hist["sigma_mean"].append(sigma_mean)
+
+        # T18: FE-Zerlegung — Complexity (β·KL) vs Inaccuracy (Recon+Pred)
+        beta_v  = float(metrics.get("beta",       0.0))
+        kl_v    = float(metrics.get("kl",         0.0))
+        recon_v = float(metrics.get("recon",      0.0))
+        pred_v  = float(metrics.get("l_pred_img", 0.0))
+        self.hist["complexity"].append(beta_v * kl_v)
+        self.hist["inaccuracy"].append(recon_v + pred_v)
+
+        # T13: Scene Prediction aus scene_head
+        if "scene_pred" in metrics:
+            self._last_scene_pred = str(metrics["scene_pred"])
 
         # Strategie-Info speichern
         if "strategy_rule" in metrics:
@@ -424,32 +441,58 @@ class TrainingDashboard:
 
         # ── Panels: Kurven + Latent + Gemini + Statistiken (langsam) ──
         if slow_update:
-            # ── Free Energy ────────────────────────────
+            # ── T18: Free Energy Zerlegung ─────────────
+            # Complexity (β·KL) = Prior-Kosten des latenten Raums
+            # Inaccuracy (Recon+Pred) = Rekonstruktions- + Vorhersagefehler
+            # Residual = Rest (Action, Sigma, Reward, Scene Loss)
             self.ax_fe.clear()
             if self.hist["fe"]:
-                self.ax_fe.plot(steps_x, list(self.hist["fe"]),
-                                color='white', linewidth=1.2,
-                                alpha=0.5, label='Free Energy')
-                self.ax_fe.plot(steps_x, list(self.hist["recon"]),
-                                color='steelblue', linewidth=1.3,
-                                label='Recon')
-                self.ax_fe.plot(steps_x, list(self.hist["kl"]),
-                                color='darkorange', linewidth=1.3,
-                                label='KL')
-                if len(self.hist["fe"]) >= 20:
-                    ma = np.convolve(list(self.hist["fe"]),
-                                     np.ones(20)/20, mode='valid')
-                    self.ax_fe.plot(range(19, len(self.hist["fe"])), ma,
-                                    color='red', linewidth=2, label='FE MA-20')
+                fe_list   = list(self.hist["fe"])
+                comp_list = list(self.hist["complexity"])
+                inacc_list= list(self.hist["inaccuracy"])
+                n = min(len(fe_list), len(comp_list), len(inacc_list))
+                sx = steps_x[:n]
+                fe_n    = fe_list[:n]
+                comp_n  = comp_list[:n]
+                inacc_n = inacc_list[:n]
+                resid_n = [max(0.0, f - c - i)
+                           for f, c, i in zip(fe_n, comp_n, inacc_n)]
+
+                # Gestapelte Flächen: Complexity → Inaccuracy → Residual
+                comp_arr  = np.array(comp_n)
+                inacc_arr = np.array(inacc_n)
+                resid_arr = np.array(resid_n)
+                self.ax_fe.fill_between(
+                    sx, 0, comp_arr,
+                    color='darkorange', alpha=0.55, label='Complexity (β·KL)')
+                self.ax_fe.fill_between(
+                    sx, comp_arr, comp_arr + inacc_arr,
+                    color='steelblue', alpha=0.55, label='Inaccuracy (Recon+Pred)')
+                self.ax_fe.fill_between(
+                    sx, comp_arr + inacc_arr, comp_arr + inacc_arr + resid_arr,
+                    color='mediumpurple', alpha=0.4, label='Residual (Action+σ+...)')
+
+                # Gesamt-FE als weiße Linie
+                self.ax_fe.plot(sx, fe_n, color='white',
+                                linewidth=1.5, alpha=0.8, label='FE total')
+                if n >= 20:
+                    ma = np.convolve(fe_n, np.ones(20)/20, mode='valid')
+                    self.ax_fe.plot(
+                        sx[19:], ma,
+                        color='red', linewidth=2, linestyle='--', label='MA-20')
+
+                # Gemini-Calls als vertikale Linien
                 for ev in self.gemini_events:
-                    si = ev["step"] - (self._step - len(self.hist["fe"]))
-                    if 0 <= si < len(self.hist["fe"]):
+                    si = ev["step"] - (self._step - n)
+                    if 0 <= si < n:
                         self.ax_fe.axvline(si, color='cyan',
-                                           linewidth=1, alpha=0.5)
-            self.ax_fe.set_title('Loss-Kurven  |  Cyan = Gemini-Call',
-                                 fontsize=9, color='white')
+                                           linewidth=1, alpha=0.4)
+
+            self.ax_fe.set_title(
+                'FE Zerlegung: Complexity (β·KL) + Inaccuracy (Recon+Pred)  |  Cyan=Gemini',
+                fontsize=8, color='white')
             if self.ax_fe.get_legend_handles_labels()[1]:
-                self.ax_fe.legend(fontsize=6, ncol=2)
+                self.ax_fe.legend(fontsize=5.5, ncol=3)
             self.ax_fe.set_facecolor('#111111')
             self.ax_fe.tick_params(colors='white')
 
@@ -468,6 +511,12 @@ class TrainingDashboard:
                 self.ax_rewards.plot(steps_x, list(self.hist["r_total"]),
                                      color='white', linewidth=2,
                                      label='Total')
+                if self.hist["r_reward_pred"]:
+                    self.ax_rewards.plot(
+                        steps_x[-len(self.hist["r_reward_pred"]):],
+                        list(self.hist["r_reward_pred"]),
+                        color='violet', linewidth=1.2, linestyle=':',
+                        alpha=0.85, label='r_pred (T14)')
                 if len(self.hist["r_total"]) >= 20:
                     ma = np.convolve(list(self.hist["r_total"]),
                                      np.ones(20)/20, mode='valid')
@@ -587,7 +636,7 @@ class TrainingDashboard:
             self.ax_prog.set_facecolor('#111111')
             self.ax_prog.tick_params(colors='white')
 
-            # ── Statistiken ────────────────────────────
+            # ── Statistiken + T18 EFE-Proxy ────────────
             self.ax_stats.clear(); self.ax_stats.axis('off')
             fe_now  = list(self.hist["fe"])[-1]       if self.hist["fe"]      else 0
             r_now   = list(self.hist["r_total"])[-1]  if self.hist["r_total"] else 0
@@ -602,15 +651,38 @@ class TrainingDashboard:
                 if self.hist["sigma_mean"] else 0
             blend_now = list(self.hist["strategy_blend"])[-1] \
                 if self.hist["strategy_blend"] else 0
+            # T14 / T13 Metriken
+            r_pred_now  = list(self.hist["r_reward_pred"])[-1] \
+                if self.hist["r_reward_pred"] else 0
+            l_rew_now   = list(self.hist["l_reward"])[-1] \
+                if self.hist["l_reward"] else 0
+            l_scn_now   = list(self.hist["l_scene"])[-1] \
+                if self.hist["l_scene"] else 0
+            comp_now    = list(self.hist["complexity"])[-1] \
+                if self.hist["complexity"] else 0
+            inacc_now   = list(self.hist["inaccuracy"])[-1] \
+                if self.hist["inaccuracy"] else 0
+
+            # EFE-Proxy: Epistemisch (Unsicherheit) vs Pragmatisch (Reward)
+            # Epistemic  ≈ sigma_mean  (hohe Unsicherheit = mehr explorieren)
+            # Pragmatic  ≈ r_reward_pred (hoher Reward = Ziel nah)
+            efe_epist = sigma_now
+            efe_prag  = r_pred_now
+            efe_label = ("ERKUNDEN" if efe_epist > efe_prag + 0.1
+                         else "ZIEL NÄHERN" if efe_prag > efe_epist + 0.1
+                         else "AUSGEWOGEN")
+            efe_color = ('cyan' if efe_epist > efe_prag + 0.1
+                         else 'gold' if efe_prag > efe_epist + 0.1
+                         else 'lightgreen')
 
             # Strategie-Info aufbereiten
             strategy_lines = []
             if self._last_strategy_rule:
                 strategy_lines = [
                     "", "── Strategie ────────────",
-                    f"Rule:  {self._last_strategy_rule[:30]}",
-                    f"Blend: {blend_now:.2f}",
-                    f"{'  (Strategy)' if blend_now > 0.7 else '  (Mixed)' if blend_now > 0.3 else '  (NN)'}",
+                    f"Rule:  {self._last_strategy_rule[:28]}",
+                    f"Blend: {blend_now:.2f}"
+                    f"{'  (Strat)' if blend_now > 0.7 else '  (Mix)' if blend_now > 0.3 else '  (NN)'}",
                 ]
 
             self.ax_stats.text(
@@ -619,27 +691,37 @@ class TrainingDashboard:
                     "── Training ─────────────",
                     f"Step:      {self._step}",
                     f"FE:        {fe_now:.5f}",
-                    f"Recon:     {rec_now:.5f}",
-                    f"KL:        {kl_now:.5f}",
-                    f"Pred.Err:  {pe_now:.5f}",
+                    f"  Compl:   {comp_now:.5f}  (β·KL)",
+                    f"  Inacc:   {inacc_now:.5f}  (R+P)",
                     f"Beta:      {beta_now:.4f}",
                     f"LR:        {lr_now:.2e}",
-                    "", "── Action ───────────────",
-                    f"Sigma:     {sigma_now:.3f}",
+                    "", "── T13/T14 ──────────────",
+                    f"Szene:     {self._last_scene_pred}",
+                    f"l_scene:   {l_scn_now:.5f}",
+                    f"r_pred:    {r_pred_now:.4f}",
+                    f"l_reward:  {l_rew_now:.5f}",
+                    "", "── EFE Proxy ────────────",
+                    f"Epistemic: {efe_epist:.3f}  (σ)",
+                    f"Pragmatic: {efe_prag:.3f}  (r_pred)",
+                    f"→ {efe_label}",
                     *strategy_lines,
-                    "", "── Rewards ──────────────",
-                    f"Total:     {r_now:.4f}",
-                    f"Gemini:    {list(self.hist['r_gemini'])[-1] if self.hist['r_gemini'] else 0:.4f}",
-                    f"Intrinsic: {list(self.hist['r_intrinsic'])[-1] if self.hist['r_intrinsic'] else 0:.4f}",
                     "", "── Gemini ───────────────",
                     f"Calls:     {len(self.gemini_events)}",
                     f"Interval:  {gem_int:.0f} Steps",
-                    f"Ziel:      {goal[:25]}",
+                    f"Ziel:      {goal[:22]}",
                 ]),
                 transform=self.ax_stats.transAxes,
-                fontsize=6.5, verticalalignment='top',
+                fontsize=6.2, verticalalignment='top',
                 fontfamily='monospace', color='white',
                 bbox=dict(boxstyle='round', facecolor='#1a1a2e', alpha=0.9)
+            )
+            # EFE-Label farbig hervorheben
+            self.ax_stats.text(
+                0.5, 0.01, f"EFE: {efe_label}",
+                transform=self.ax_stats.transAxes,
+                fontsize=7.5, ha='center', fontweight='bold',
+                color=efe_color,
+                bbox=dict(boxstyle='round', facecolor='#0d0d0d', alpha=0.7)
             )
 
         # ── NN-Erkennung (Balkendiagramm, jeden Aufruf) ──────────
@@ -668,8 +750,9 @@ class TrainingDashboard:
                 )
             self.ax_recog.invert_yaxis()
             self.ax_recog.set_title(
-                f'NN Erkennung  →  {lbls[0]}',
-                fontsize=8, color='#44ee88', fontweight='bold'
+                f'NN Erkennung  →  {lbls[0]}\n'
+                f'Scene-Head (T13): {self._last_scene_pred}',
+                fontsize=7.5, color='#44ee88', fontweight='bold'
             )
         else:
             self.ax_recog.text(
@@ -904,8 +987,8 @@ def run_demo():
 
         # Latent-Vektor (mock: szenen-spezifisch + Rauschen)
         rng   = np.random.default_rng(scene_idx*100)
-        z_base = rng.standard_normal(64).astype(np.float32)
-        z_now  = z_base + 0.3*np.random.randn(64).astype(np.float32)
+        z_base = rng.standard_normal(256).astype(np.float32)
+        z_now  = z_base + 0.3*np.random.randn(256).astype(np.float32)
 
         # Gemini-Event
         gemini_event = None
@@ -933,7 +1016,20 @@ def run_demo():
                 1.0 / (1.0 + np.exp(-(np.mean(sigma) - 0.4) * 8.0)),
                 0.1, 0.9
             )
-            strategy_rule = "no_target → scan_panorama" if blend_factor > 0.5 else "target_centered → move_forward"
+            strategy_rule = "no_target → turn_left" if blend_factor > 0.5 else "target_centered → move_forward"
+
+            # T18 Mock: neue Metriken simulieren
+            l_pred_img   = max(0, recon * 0.6 + 0.002*np.random.randn())
+            l_reward_val = max(0, 0.05 * np.exp(-t*2) + 0.005*np.random.rand())
+            l_scene_val  = max(0, 2.0  * np.exp(-t*3) + 0.05*np.random.rand())
+            r_reward_pred= float(np.clip(r_gem + 0.05*np.random.randn(), 0, 1))
+            # T13: Scene Prediction (konvergiert über Zeit zur richtigen Klasse)
+            scene_vocab = ["red_box","yellow_box","orange_box","white_box",
+                           "green_ball","blue_ball","exploring","unknown"]
+            scene_map   = {"red_box": "red_box", "blue_ball": "blue_ball",
+                           "green_door": "green_ball", "corridor": "exploring",
+                           "corner": "exploring"}
+            scene_pred  = scene_map.get(scene, "unknown") if t > 0.3 else "unknown"
 
             dash.update(
                 obs=obs_np,
@@ -945,12 +1041,17 @@ def run_demo():
                     "r_intrinsic":     r_intr,
                     "r_gemini":        r_gem,
                     "r_total":         r_total,
+                    "r_reward_pred":   r_reward_pred,
                     "goal_progress":   goal_prog,
                     "beta":            beta,
                     "lr":              lr_val,
                     "gemini_interval": gem_int,
                     "strategy_rule":   strategy_rule,
                     "strategy_blend":  blend_factor,
+                    "l_pred_img":      l_pred_img,
+                    "l_reward":        l_reward_val,
+                    "l_scene":         l_scene_val,
+                    "scene_pred":      scene_pred,
                 },
                 gemini_event=gemini_event,
                 latent_z=z_now,
