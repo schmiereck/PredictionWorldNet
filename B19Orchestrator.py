@@ -636,6 +636,8 @@ class Orchestrator:
                     "image_nn": obs.image,
                     "reward":      self.ml_system.metrics["r_total"][-1]
                                    if self.ml_system.metrics["r_total"] else 0.0,
+                    "r_intr":      self.ml_system.metrics["r_intrinsic"][-1]
+                                   if self.ml_system.metrics.get("r_intrinsic") else 0.05,
                     "sigma":       0.5,  # wird nach ml_result aktualisiert
                     "cam_pan":     self.obs_source._cam_pan
                                    if isinstance(self.obs_source, MiniWorldObsSource)

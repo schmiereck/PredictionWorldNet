@@ -55,6 +55,7 @@ class ConditionEvaluator:
         self._pan_direction     = -1     # -1 = nach links, +1 = nach rechts
         self._pan_steps         = 0
         self._last_reward       = 0.0
+        self._boring_count      = 0     # Steps mit niedrigem r_intr
 
     def evaluate(self, obs_info: dict) -> Dict[str, bool]:
         """
@@ -63,12 +64,14 @@ class ConditionEvaluator:
         obs_info Keys:
             image_nn: np.ndarray (128,128,3) uint8
             reward: float (letzter Gemini-Reward)
+            r_intr: float (intrinsischer Reward / Novelty)
             sigma: float (NN-Unsicherheit)
             cam_pan: float (-1..1, aktuelle Kamera-Position)
             step: int
         """
         img = obs_info.get("image_nn")
         reward = obs_info.get("reward", 0.0)
+        r_intr = obs_info.get("r_intr", 0.05)
         cam_pan = obs_info.get("cam_pan", 0.0)
 
         # Farb-Erkennung
@@ -86,6 +89,20 @@ class ConditionEvaluator:
             else:
                 self._stuck_count = 0
             self._last_obs_hash = obs_hash
+
+        # wall_stuck: feststecken UND Bild gleichförmig (Wand füllt Frame)
+        if img is not None:
+            img_variance = float(np.var(img.astype(np.float32)))
+        else:
+            img_variance = 9999.0
+        wall_stuck = (self._stuck_count >= self.stuck_threshold) and (img_variance < 200.0)
+
+        # boring_scene: r_intr dauerhaft niedrig (Szene ändert sich kaum)
+        if r_intr < 0.005:
+            self._boring_count += 1
+        else:
+            self._boring_count = 0
+        boring_scene = self._boring_count >= 30
 
         # Fortschritts-Tracking
         if reward <= self._last_reward + 0.01:
@@ -108,6 +125,8 @@ class ConditionEvaluator:
             "target_far":      0.02 <= target_ratio <= 0.15,
             "pan_done":        pan_done,
             "stuck":           self._stuck_count >= self.stuck_threshold,
+            "wall_stuck":      wall_stuck,
+            "boring_scene":    boring_scene,
             "timeout":         self._no_progress_count >= self.timeout_steps,
             "always":          True,
         }
@@ -245,6 +264,7 @@ class StrategyExecutor:
         self._current_action_vec   = None
         self._remaining_steps      = 0
         self._last_matched_rule    = None
+        self._escape_turn_dir      = 1.0   # +1 oder -1, wird bei escape_wall gesetzt
 
         # Statistiken
         self.stats = {
@@ -291,6 +311,9 @@ class StrategyExecutor:
             # Spezialbehandlung: scan_panorama ist eine Sequenz
             if self._current_action_name == "scan_panorama":
                 return self._compute_scan_panorama_action()
+            # Spezialbehandlung: escape_wall ist eine 3-Phasen-Sequenz
+            if self._current_action_name == "escape_wall":
+                return self._compute_escape_wall_action()
             return self._current_action_vec.copy()
 
         # Conditions auswerten
@@ -315,6 +338,10 @@ class StrategyExecutor:
                 # Spezialbehandlung: scan_panorama (alternierend links/rechts)
                 if rule.action == "scan_panorama":
                     self._evaluator.reset_pan()
+
+                # Spezialbehandlung: escape_wall (Drehrichtung zufällig wählen)
+                if rule.action == "escape_wall":
+                    self._escape_turn_dir = float(np.random.choice([-1.0, 1.0]))
 
                 self._current_action_vec = vec
 
@@ -357,6 +384,26 @@ class StrategyExecutor:
             cam_pan = -0.7
 
         return np.array([0.0, 0.0, cam_pan, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    def _compute_escape_wall_action(self) -> np.ndarray:
+        """
+        Wandflucht-Sequenz (3 Phasen, Gesamtdauer 22 Steps):
+          Phase 1 (Steps 0-2):   Stopp + Kamera zentrieren
+          Phase 2 (Steps 3-7):   Rückwärts fahren (weg von der Wand)
+          Phase 3 (Steps 8-21):  Zufällig drehen (Richtung einmal gewählt)
+        """
+        current_step = ESCAPE_WALL_DURATION - 1 - self._remaining_steps
+
+        if current_step < ESCAPE_WALL_PHASE1_END:
+            # Phase 1: Anhalten und Kamera geradeaus
+            return np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        elif current_step < ESCAPE_WALL_PHASE2_END:
+            # Phase 2: Rückwärts
+            return np.array([-0.4, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        else:
+            # Phase 3: Drehen in gewählter Richtung
+            return np.array([0.0, 0.8 * self._escape_turn_dir, 0.0, 0.0, 0.0, 0.0],
+                            dtype=np.float32)
 
     def blend(self, strategy_action: np.ndarray,
               nn_action: np.ndarray,
