@@ -106,6 +106,8 @@ KNOWN_CONDITIONS = {
     "target_far",         # Ziel weit weg (kleiner Anteil)
     "pan_done",           # Kamera hat vollen Schwenk abgeschlossen
     "stuck",              # Agent bewegt sich nicht (keine Veränderung)
+    "wall_stuck",         # Feststecken AN einer Wand (uniform + stuck)
+    "boring_scene",       # r_intr lange tief: Szene ändert sich kaum
     "timeout",            # N Steps ohne Fortschritt
     "always",             # Immer wahr (niedrigste Priorität)
 }
@@ -125,9 +127,10 @@ KNOWN_ACTIONS = {
     "stop",               # Anhalten
     "random_turn",        # Zufällige Drehung (Exploration)
     "scan_panorama",      # Volle 360° Kamera-Schwenk-Sequenz
+    "escape_wall",        # Wandflucht: Kamera zentrieren → rückwärts → drehen
 }
 
-# Action → 6D Array Mapping [linear_x, angular_z, cam_pan, cam_tilt, grip, aux]
+# Action → 6D Array Mapping [linear_x, angular_z, cam_pan, cam_tilt, arc_radius, duration]
 ACTION_VECTORS = {
     "move_forward":   [ 0.8,  0.0,  0.0,  0.0, 0.0, 0.0],
     "move_backward":  [-0.5,  0.0,  0.0,  0.0, 0.0, 0.0],
@@ -139,7 +142,16 @@ ACTION_VECTORS = {
     "stop":           [ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0],
     "random_turn":    [ 0.0,  0.5,  0.0,  0.0, 0.0, 0.0],  # wird randomisiert
     "scan_panorama":  [ 0.0,  0.0, -0.8,  0.0, 0.0, 0.0],  # sequenziell
+    "escape_wall":    [ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0],  # sequenziell (3 Phasen)
 }
+
+# Wandflucht-Sequenz (escape_wall): 3 Phasen, Gesamtdauer 22 Steps
+# Phase 1 (Steps 0-2):   Stopp + Kamera zentrieren
+# Phase 2 (Steps 3-7):   Rückwärts fahren (weg von der Wand)
+# Phase 3 (Steps 8-21):  Zufällig drehen bis r_intr wieder steigt
+ESCAPE_WALL_DURATION    = 22
+ESCAPE_WALL_PHASE1_END  = 3
+ESCAPE_WALL_PHASE2_END  = 8
 
 
 # ─────────────────────────────────────────────
@@ -168,23 +180,27 @@ class MockStrategyGenerator(StrategyGenerator):
     def generate(self, goal: str) -> Strategy:
         rules = [
             # Höchste Priorität: Ziel nah + zentriert → Geschafft
-            Rule("target_close",    "stop",          duration=1, priority=100),
+            Rule("target_close",    "stop",          duration=1,  priority=100),
+            # Wandflucht: Kamera zentrieren → rückwärts → drehen (höher als stuck!)
+            Rule("wall_stuck",      "escape_wall",   duration=ESCAPE_WALL_DURATION, priority=97),
+            # Langweilige Szene (gegen Wand / r_intr tief) → ebenfalls flüchten
+            Rule("boring_scene",    "escape_wall",   duration=ESCAPE_WALL_DURATION, priority=96),
+            # Feststecken (ohne Wand) → rückwärts
+            Rule("stuck",           "move_backward", duration=5,  priority=95),
             # Ziel sichtbar und zentriert → drauf zu
-            Rule("target_centered", "move_forward",  duration=5, priority=90),
+            Rule("target_centered", "move_forward",  duration=5,  priority=90),
             # Ziel links → nach links drehen
-            Rule("target_left",     "turn_left",     duration=3, priority=80),
+            Rule("target_left",     "turn_left",     duration=3,  priority=80),
             # Ziel rechts → nach rechts drehen
-            Rule("target_right",    "turn_right",    duration=3, priority=80),
+            Rule("target_right",    "turn_right",    duration=3,  priority=80),
             # Nichts sichtbar → Kamera schwenken (kompletter Sweep: links→rechts→mitte)
             Rule("no_target",       "scan_panorama", duration=16, priority=50),
             # Kamera-Schwenk fertig → erst Kamera zentrieren
-            Rule("pan_done",        "center_camera", duration=3, priority=45),
-            # Feststecken → rückwärts + drehen
-            Rule("stuck",           "move_backward", duration=3, priority=95),
+            Rule("pan_done",        "center_camera", duration=3,  priority=45),
             # Timeout → zufällig drehen
-            Rule("timeout",         "random_turn",   duration=4, priority=30),
+            Rule("timeout",         "random_turn",   duration=4,  priority=30),
             # Fallback: Wenn nichts anderes greift → Roboter langsam drehen
-            Rule("always",          "turn_left",     duration=5, priority=25),
+            Rule("always",          "turn_left",     duration=5,  priority=25),
         ]
 
         return Strategy(

@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from collections import deque
 
 from B22StrategyGenerator import (
-    Strategy, Rule, ACTION_VECTORS, KNOWN_CONDITIONS
+    Strategy, Rule, ACTION_VECTORS, KNOWN_CONDITIONS,
+    ESCAPE_WALL_DURATION, ESCAPE_WALL_PHASE1_END, ESCAPE_WALL_PHASE2_END,
 )
 
 
