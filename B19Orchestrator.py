@@ -421,6 +421,9 @@ class Orchestrator:
         # Letztes Gemini-Hochreis-Bild (persistiert zwischen Updates)
         self._last_gemini_image = None
 
+        # Setup-Status: verhindert Checkpoint-Schreiben bei vorzeitigem Schließen
+        self._setup_complete = False
+
     def setup(self):
         """Erstellt alle Komponenten."""
         print("B19 – Orchestrator Setup")
@@ -484,15 +487,53 @@ class Orchestrator:
         # Initiales Ziel setzen
         self.ml_system.set_goal(f"find the {self._scene.replace('_',' ')}")
         print(f"  IntegratedSystem ✓  ({sum(p.numel() for p in self.ml_system.encoder.parameters()) + sum(p.numel() for p in self.ml_system.decoder.parameters()):,} Param.)")
+        print()
 
-        # ── Checkpoint laden (B20) ─────────────────────
+        # ── Dashboard (B18) – früh öffnen, damit Fenster sofort bewegbar sind ──
+        hist_len = self.cfg["n_steps"] if self.cfg["n_steps"] > 0 else 5000
+        self.dashboard = TrainingDashboard(
+            max_history=hist_len,
+            title=(f"B19 – Live Training  |  "
+                   f"Modus: {self.cfg['mode'].upper()}  |  "
+                   f"Gemini: {'✓' if self.gemini.mode=='gemini' else 'Mock'}")
+        )
+        self.dashboard.setup()
+        print("Dashboard (B18): ✓")
+        print()
+
+        # ── Overhead Map – ebenfalls früh öffnen ──────
+        if OverheadMapView is not None:
+            trail_len = min(hist_len, 400)
+            self.overhead = OverheadMapView(
+                map_size=30.0, trail_length=trail_len,
+                title=f"Draufsicht  |  {self.cfg['mode'].upper()}"
+            )
+            self.overhead.setup()
+            if isinstance(self.obs_source, MiniWorldObsSource) \
+                    and self.obs_source.is_miniworld:
+                self.overhead.set_miniworld_env(self.obs_source._env)
+                print("Overhead Map:   ✓  (MiniWorld Wände + Objekte)")
+            else:
+                print("Overhead Map:   ✓")
+        else:
+            print("Overhead Map:   ✗ (OverheadMapView.py nicht gefunden)")
+        print()
+
+        # Fenster-Events verarbeiten → Fenster sind jetzt verschiebbar
+        try:
+            import matplotlib.pyplot as _plt
+            _plt.pause(0.05)
+        except Exception:
+            pass
+
+        # ── Checkpoint laden (B20) – nach Fenster-Öffnung ─────────────────────
         ckpt_path = self.cfg.get("checkpoint", None)
         if ckpt_path:
             import glob as _g
             matches = sorted(_g.glob(ckpt_path))
             if matches:
                 ckpt_path = matches[-1]  # neuester
-            print(f"\n  Lade Checkpoint: {ckpt_path}")
+            print(f"Checkpoint laden: {ckpt_path}")
             self.ml_system.load_checkpoint(
                 ckpt_path,
                 load_optimizer=self.cfg.get("load_optimizer", False),
@@ -511,59 +552,43 @@ class Orchestrator:
                     print("  Label-Embeddings: nicht im Checkpoint (B21 erneut ausführen)")
             except Exception as _e:
                 print(f"  Label-Embeddings: Fehler beim Laden ({_e})")
-        print()
+            print()
 
-        # ── Dashboard (B18) ────────────────────────────
-        hist_len = self.cfg["n_steps"] if self.cfg["n_steps"] > 0 else 5000
-        self.dashboard = TrainingDashboard(
-            max_history=hist_len,
-            title=(f"B19 – Live Training  |  "
-                   f"Modus: {self.cfg['mode'].upper()}  |  "
-                   f"Gemini: {'✓' if self.gemini.mode=='gemini' else 'Mock'}")
-        )
-        self.dashboard.setup()
-        print("Dashboard (B18): ✓")
-        print()
-
-        # ── Overhead Map ───────────────────────────────
-        if OverheadMapView is not None:
-            # Trail-Länge auf sinnvolles Maximum begrenzen (unabhängig von n_steps)
-            trail_len = min(hist_len, 400)
-            self.overhead = OverheadMapView(
-                map_size=30.0, trail_length=trail_len,
-                title=f"Draufsicht  |  {self.cfg['mode'].upper()}"
-            )
-            self.overhead.setup()
-            # MiniWorld-Env übergeben für echte Wände/Objekte/Position
-            if isinstance(self.obs_source, MiniWorldObsSource) \
-                    and self.obs_source.is_miniworld:
-                self.overhead.set_miniworld_env(self.obs_source._env)
-                print("Overhead Map:   ✓  (MiniWorld Wände + Objekte)")
-            else:
-                print("Overhead Map:   ✓")
-        else:
-            print("Overhead Map:   ✗ (OverheadMapView.py nicht gefunden)")
-        print()
+        # Fenster-Events erneut verarbeiten (nach Checkpoint-Load)
+        try:
+            _plt.pause(0.05)
+        except Exception:
+            pass
 
         # ── Strategie-System (B22+B23) ────────────────
         if StrategyExecutor is not None:
             self.strategy_exec = StrategyExecutor()
-            # Gemini oder Mock Strategy Generator
-            if self.gemini.mode == "gemini" and GeminiStrategyGenerator is not None:
-                self.strategy_gen = GeminiStrategyGenerator(
-                    client=self.gemini.client,
-                )
-            else:
-                self.strategy_gen = MockStrategyGenerator()
-            # Initiale Strategie generieren
             goal_text = self.ml_system.current_goal or "explore the environment"
+
+            # Immer sofort mit Mock-Strategie starten (kein Blockieren)
+            self.strategy_gen = MockStrategyGenerator()
             strategy = self.strategy_gen.generate(goal_text)
             self.strategy_exec.set_strategy(strategy)
-            print(f"Strategie:      ✓  ({strategy.source})")
+            print(f"Strategie:      ✓  (mock, sofort verfügbar)")
+
+            # Gemini-Strategie asynchron upgraden (kein Warten auf API-Call)
+            if self.gemini.mode == "gemini" and GeminiStrategyGenerator is not None:
+                import threading as _threading
+                def _upgrade_strategy():
+                    try:
+                        gen   = GeminiStrategyGenerator(client=self.gemini.client)
+                        strat = gen.generate(goal_text)
+                        self.strategy_gen  = gen
+                        self.strategy_exec.set_strategy(strat)
+                        print(f"  Strategie upgrade: Gemini ({len(strat.rules)} Regeln)")
+                    except Exception as _e:
+                        print(f"  Gemini-Strategie: Fehler ({_e}), behalte Mock")
+                _threading.Thread(target=_upgrade_strategy, daemon=True).start()
         else:
             print("Strategie:      ✗ (B22/B23 nicht gefunden)")
         print()
 
+        self._setup_complete = True
         return self
 
     def _get_miniworld_action(self, step: int) -> np.ndarray:
@@ -862,7 +887,9 @@ class Orchestrator:
         print("  B22 – Pre-Training CLIP")
 
         # ── Checkpoint speichern (B20) ─────────────────
-        if self.cfg.get("save_checkpoint", True):
+        # Nur speichern wenn Setup vollständig abgeschlossen war
+        # (verhindert leeren Checkpoint bei zu frühem Fenster-Schließen)
+        if self.cfg.get("save_checkpoint", True) and self._setup_complete:
             self.ml_system.save_checkpoint(tag="checkpoint")
 
     def close(self):
