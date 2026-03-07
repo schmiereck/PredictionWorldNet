@@ -45,13 +45,16 @@ import matplotlib
 matplotlib.use('TkAgg')
 
 import os
+import csv
 import json
 import base64
+import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from collections import deque
 from io import BytesIO
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -219,8 +222,15 @@ class TemporalTransformer(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers,
                                                   enable_nested_tensor=False)
-        # Next-Latent-Prediction Head: context → predicted z_{t+1}
-        self.next_z_head = nn.Linear(d_model, latent_dim)
+        # T10: Action-konditioniertes Transitions-Modell P(z_{t+1} | z_t, a_t)
+        # Früher: next_z_head = nn.Linear(d_model, latent_dim)  [action-agnostisch]
+        # Jetzt:  dynamics_head(cat([context, a_t]))             [explizit konditioniert]
+        # Das Modell lernt: "Was sehe ich NACH Aktion a_t?" – echter World-Model-Kern.
+        self.dynamics_head = nn.Sequential(
+            nn.Linear(d_model + action_dim, 256),
+            nn.ReLU(True),
+            nn.Linear(256, latent_dim),
+        )
 
     def forward(self, z_cur, goal_emb, z_hist=None, a_hist=None):
         B = z_cur.size(0)
@@ -240,6 +250,19 @@ class TemporalTransformer(nn.Module):
         seq = torch.cat(tokens, dim=1)
         out = self.transformer(seq)
         return out[:, 0, :]   # CLS token
+
+    def predict_next_z(self, context: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """
+        T10: Aktions-konditionierte Zustandsvorhersage.
+        P(z_{t+1} | context, a_t) – Kern des generativen World-Models.
+
+        Args:
+            context: (B, D_MODEL) – Transformer CLS-Ausgabe
+            action:  (B, ACTION_DIM) – aktuelle Aktion (normiert in [-1, 1])
+        Returns:
+            pred_z_next: (B, LATENT_DIM)
+        """
+        return self.dynamics_head(torch.cat([context, action], dim=-1))
 
 
 class ActionHead(nn.Module):
@@ -542,6 +565,14 @@ class IntegratedSystem:
             nn.ReLU(True),
             nn.Linear(128, LATENT_DIM),
         )
+        # T14: Reward-Prädiktor P(r | z_t, a_t)
+        # Pragmatischer EFE-Term: Reward-Schätzung ohne Gemini-Aufruf.
+        # Trainiert auf (z, a) → r_gemini aus dem Replay Buffer.
+        # Ermöglicht später: Planung in der Imagination (T15).
+        self.reward_head = nn.Sequential(
+            nn.Linear(LATENT_DIM + ACTION_DIM, 128), nn.ReLU(True),
+            nn.Linear(128, 1), nn.Sigmoid(),
+        )
 
         # Buffer
         self.replay = ReplayBuffer(max_size=config["buffer_size"])
@@ -566,7 +597,8 @@ class IntegratedSystem:
                 list(self.decoder.parameters()) +
                 list(self.transformer.parameters()) +
                 list(self.action_head.parameters()) +
-                list(self.goal_proj.parameters())
+                list(self.goal_proj.parameters()) +
+                list(self.reward_head.parameters())
         )
         self.optimizer = torch.optim.AdamW(
             all_params, lr=config["lr"], weight_decay=1e-3
@@ -578,8 +610,8 @@ class IntegratedSystem:
 
         # Metriken
         self.metrics = {k: [] for k in [
-            "fe", "recon", "kl", "action",
-            "r_intrinsic", "r_gemini", "r_total",
+            "fe", "recon", "pred_img", "kl", "kl_raw", "action", "l_sigma", "l_reward",
+            "r_intrinsic", "r_gemini", "r_reward_pred", "r_total",
             "goal_progress", "gemini_interval",
             "gemini_call_rate", "lr",
         ]}
@@ -587,6 +619,36 @@ class IntegratedSystem:
         self.total_steps        = 0
         self.train_steps        = 0
         self._label_clip_embeddings = None  # wird aus Checkpoint geladen
+
+        # ── Log-Dateien (CSV, ein Timestamp pro Session) ──────
+        log_dir = Path(os.path.dirname(os.path.abspath(__file__))) / "logs"
+        log_dir.mkdir(exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._log_ts = ts
+
+        self._log_steps   = open(log_dir / f"steps_{ts}.csv",   "w", newline="")
+        self._log_train   = open(log_dir / f"train_{ts}.csv",   "w", newline="")
+        self._log_gemini  = open(log_dir / f"gemini_{ts}.csv",  "w", newline="")
+
+        self._csv_steps  = csv.writer(self._log_steps)
+        self._csv_train  = csv.writer(self._log_train)
+        self._csv_gemini = csv.writer(self._log_gemini)
+
+        # Header
+        self._csv_steps.writerow([
+            "total_step", "r_intr", "r_gemini", "r_reward_pred", "r_total",
+            "sigma_mean", "novelty", "goal", "scene", "gem_called",
+        ])
+        self._csv_train.writerow([
+            "train_step", "total_step", "fe", "recon", "pred_img",
+            "kl", "kl_raw", "action", "l_sigma", "l_reward", "goal_loss", "cam_center",
+            "lr", "beta",
+            "grad_enc", "grad_dec", "grad_tr", "grad_ah", "grad_gp", "grad_rh",
+        ])
+        self._csv_gemini.writerow([
+            "total_step", "reward", "goal_progress", "situation",
+            "recommendation", "action_hint", "training_label", "goal",
+        ])
 
     def set_goal(self, user_cmd: str):
         """Neues Ziel via Gemini Text-Interface (B13)."""
@@ -626,6 +688,7 @@ class IntegratedSystem:
             "transformer":  self.transformer.state_dict(),
             "action_head":  self.action_head.state_dict(),
             "goal_proj":    self.goal_proj.state_dict(),
+            "reward_head":  self.reward_head.state_dict(),   # T14
             # Optimizer & Scheduler
             "optimizer":    self.optimizer.state_dict(),
             "scheduler":    self.scheduler.state_dict(),
@@ -685,8 +748,16 @@ class IntegratedSystem:
                     checkpoint["transformer"], strict=strict)
             except RuntimeError as e:
                 if strict:
-                    raise
-                print(f"    Transformer: übersprungen ({e})")
+                    # T10-Migration: Alter Checkpoint hat next_z_head, neues Modell
+                    # hat dynamics_head. Partial-Load übernimmt alle anderen Gewichte.
+                    try:
+                        self.transformer.load_state_dict(
+                            checkpoint["transformer"], strict=False)
+                        print("    Transformer: T10-Migration (next_z_head -> dynamics_head, partial load)")
+                    except Exception as e2:
+                        print(f"    Transformer: übersprungen ({e2})")
+                else:
+                    print(f"    Transformer: übersprungen ({e})")
         if "action_head" in checkpoint:
             try:
                 self.action_head.load_state_dict(
@@ -703,6 +774,14 @@ class IntegratedSystem:
                 if strict:
                     raise
                 print(f"    GoalProj: übersprungen ({e})")
+        if "reward_head" in checkpoint:
+            try:
+                self.reward_head.load_state_dict(
+                    checkpoint["reward_head"], strict=strict)
+            except RuntimeError as e:
+                if strict:
+                    raise
+                print(f"    RewardHead: übersprungen ({e})")
 
         # Optimizer/Scheduler
         if load_optimizer and "optimizer" in checkpoint:
@@ -752,6 +831,7 @@ class IntegratedSystem:
         # ── Forward Pass (Inference) ────────────────────────
         self.encoder.eval(); self.decoder.eval()
         self.transformer.eval(); self.action_head.eval()
+        self.reward_head.eval()
 
         with torch.no_grad():
             x    = torch.from_numpy(obs_np).float().permute(2,0,1).unsqueeze(0)/255.0
@@ -772,10 +852,17 @@ class IntegratedSystem:
                 if len(self.a_hist) >= 2 else None
 
             context = self.transformer(z, goal_emb, z_h, a_h)
-            # Echte Nächst-Frame-Vorhersage: pred_z_next → decoder → pred_obs
-            pred_z_next = self.transformer.next_z_head(context)
+            # T10: Aktions-konditionierte Nächst-Frame-Vorhersage
+            # pred_z_next hängt jetzt explizit von action_np ab
+            a_t         = torch.from_numpy(action_np).float().unsqueeze(0)
+            pred_z_next = self.transformer.predict_next_z(context, a_t)
             pred_obs    = self.decoder(pred_z_next)
             pred_action, pred_sigma = self.action_head(context)
+
+            # T14: Reward-Vorhersage ohne Gemini – pragmatischer EFE-Term
+            r_reward_pred = float(
+                self.reward_head(torch.cat([z, a_t], dim=-1)).squeeze().item()
+            )
 
         # ── Intrinsic Reward: echter Prediction-Error (pred vs. nächstes Bild)
         r_intr = float(F.mse_loss(pred_obs,
@@ -843,20 +930,46 @@ class IntegratedSystem:
         )
         self.metrics["gemini_call_rate"].append(self.adaptive.call_rate)
         self.metrics["lr"].append(self.optimizer.param_groups[0]["lr"])
-        for k in ["fe", "recon", "kl", "action"]:
+        for k in ["fe", "recon", "pred_img", "kl", "kl_raw", "action", "l_sigma", "l_reward"]:
             self.metrics[k].append(train_info.get(k, 0.0))
+        self.metrics["r_reward_pred"].append(r_reward_pred)
+
+        # ── CSV-Logging: steps_{ts}.csv ──────────────────────
+        sigma_mean = float(pred_sigma.mean().item())
+        self._csv_steps.writerow([
+            self.total_steps, round(r_intr, 6), round(r_gemini, 4),
+            round(r_reward_pred, 4), round(r_total, 4), round(sigma_mean, 4),
+            round(novelty, 4), self.current_goal, scene, int(gem_called),
+        ])
+        self._log_steps.flush()
+
+        # ── CSV-Logging: gemini_{ts}.csv ─────────────────────
+        if gem_called and self.last_gemini_result:
+            ass = self.last_gemini_result
+            self._csv_gemini.writerow([
+                self.total_steps,
+                round(ass.get("reward", 0), 4),
+                round(ass.get("goal_progress", 0), 4),
+                ass.get("situation", ""),
+                ass.get("recommendation", ""),
+                ass.get("next_action_hint", ""),
+                ass.get("training_label", ""),
+                self.current_goal,
+            ])
+            self._log_gemini.flush()
 
         return {
-            "r_intr":     r_intr,
-            "r_gemini":   r_gemini,
-            "r_total":    r_total,
-            "goal_prog":  goal_prog,
-            "gem_called": gem_called,
-            "pred_obs":   pred_obs.squeeze(0).permute(1,2,0).detach().numpy(),
-            "pred_action":pred_action.squeeze(0).detach().numpy(),
-            "sigma":      pred_sigma.squeeze(0).detach().numpy(),
-            "context_norm": float(context.norm().item()),
-            "latent_z":   z.squeeze(0).detach().numpy(),
+            "r_intr":         r_intr,
+            "r_gemini":       r_gemini,
+            "r_reward_pred":  r_reward_pred,   # T14: Reward ohne Gemini
+            "r_total":        r_total,
+            "goal_prog":      goal_prog,
+            "gem_called":     gem_called,
+            "pred_obs":       pred_obs.squeeze(0).permute(1,2,0).detach().numpy(),
+            "pred_action":    pred_action.squeeze(0).detach().numpy(),
+            "sigma":          pred_sigma.squeeze(0).detach().numpy(),
+            "context_norm":   float(context.norm().item()),
+            "latent_z":       z.squeeze(0).detach().numpy(),
             **train_info,
         }
 
@@ -869,6 +982,7 @@ class IntegratedSystem:
 
         self.encoder.train(); self.decoder.train()
         self.transformer.train(); self.action_head.train()
+        self.reward_head.train()
 
         obs  = batch["obs"].permute(0,3,1,2)
         nobs = batch["next_obs"].permute(0,3,1,2)
@@ -890,8 +1004,8 @@ class IntegratedSystem:
         with torch.no_grad():
             _, _, z_next = self.encoder(nobs)
 
-        # Nächst-Frame-Prediction: Transformer sagt z_{t+1} voraus
-        pred_z_next   = self.transformer.next_z_head(context)
+        # T10: Aktions-konditionierte Vorhersage – acts ist die ausgeführte Aktion
+        pred_z_next   = self.transformer.predict_next_z(context, acts)
 
         # Nächst-Frame-Loss im BILDRAUM – Decoder lernt aus pred_z_next
         # das nächste Bild zu erzeugen (echter Prediction-Loss, kein Recon)
@@ -931,6 +1045,25 @@ class IntegratedSystem:
         gem_weight = (g_rs / (g_rs.sum() + 1e-8)).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         l_gemini   = (gem_weight * (recon - obs).pow(2)).mean()
 
+        # T14: Reward-Prädiktor – eigene Stichprobe aus allen Gemini-Labels im Buffer.
+        # Eigene Stichprobe statt Batch-Maske: zuverlässige Dichte unabhängig von
+        # der Anzahl Gemini-Calls in diesem spezifischen Batch.
+        # z.detach(): kein Gradient zurück durch den Encoder.
+        gem_n = min(self.replay.gemini_count, 8)
+        if gem_n >= 2:
+            rb = self.replay.sample(gem_n, require_gemini=True)
+            if rb is not None:
+                with torch.no_grad():
+                    _, _, z_rb = self.encoder(rb["obs"].permute(0, 3, 1, 2))
+                pred_r   = self.reward_head(
+                    torch.cat([z_rb.detach(), rb["actions"]], dim=-1)
+                ).squeeze(-1)
+                l_reward = F.mse_loss(pred_r, rb["gemini_rewards"])
+            else:
+                l_reward = torch.tensor(0.0, device=obs.device)
+        else:
+            l_reward = torch.tensor(0.0, device=obs.device)
+
         fe = (1.0  * l_recon +
               0.5  * l_pred_img +       # Nächst-Frame-Prediction im Bildraum
               self.beta * l_kl +
@@ -939,7 +1072,8 @@ class IntegratedSystem:
               0.05 * l_sigma +
               0.1  * l_goal +
               0.2  * l_gemini +
-              0.05 * l_cam_center)
+              0.05 * l_cam_center +
+              0.1  * l_reward)          # T14: Reward-Prädiktor
 
         self.optimizer.zero_grad()
         fe.backward()
@@ -955,6 +1089,7 @@ class IntegratedSystem:
             "transformer": _grad_norm(self.transformer),
             "action_head": _grad_norm(self.action_head),
             "goal_proj":   _grad_norm(self.goal_proj),
+            "reward_head": _grad_norm(self.reward_head),
         }
 
         torch.nn.utils.clip_grad_norm_(
@@ -962,7 +1097,8 @@ class IntegratedSystem:
             list(self.decoder.parameters()) +
             list(self.transformer.parameters()) +
             list(self.action_head.parameters()) +
-            list(self.goal_proj.parameters()),
+            list(self.goal_proj.parameters()) +
+            list(self.reward_head.parameters()),
             max_norm=1.0
         )
         self.optimizer.step()
@@ -973,13 +1109,54 @@ class IntegratedSystem:
         # Echter KL-Wert (ohne Free-Bits-Offset) für Monitoring:
         kl_raw = float((-0.5 * (1 + log_var - mu.pow(2) - log_var.exp())).mean().detach())
         if kl_raw < 0.01 and self.train_steps > 100:
-            print(f"  ⚠️ KL-Collapse-Warnung: KL_raw={kl_raw:.4f} nats (Step {self.train_steps})")
+            print(f"  [WARN] KL-Collapse: KL_raw={kl_raw:.4f} nats (TrainStep {self.train_steps})")
+
+        fe_val      = float(fe.detach())
+        recon_val   = float(l_recon.detach())
+        pred_val    = float(l_pred_img.detach())
+        act_val     = float(l_action.detach())
+        sigma_val   = float(l_sigma.detach())
+        goal_val    = float(l_goal.detach())
+        cam_val     = float(l_cam_center.detach())
+
+        reward_val = float(l_reward.detach())
+
+        # CSV-Logging: train_{ts}.csv (jeder Train-Step)
+        gn = grad_norms
+        self._csv_train.writerow([
+            self.train_steps, self.total_steps,
+            round(fe_val, 6), round(recon_val, 6), round(pred_val, 6),
+            round(kl_val, 6), round(kl_raw, 6), round(act_val, 6),
+            round(sigma_val, 6), round(reward_val, 6),
+            round(goal_val, 6), round(cam_val, 6),
+            round(self.optimizer.param_groups[0]["lr"], 8),
+            round(self.beta, 6),
+            round(gn["encoder"], 4), round(gn["decoder"], 4),
+            round(gn["transformer"], 4), round(gn["action_head"], 4),
+            round(gn["goal_proj"], 4), round(gn["reward_head"], 4),
+        ])
+        if self.train_steps % 20 == 0:
+            self._log_train.flush()
+
+        # Kurze Konsolen-Zusammenfassung nur alle 200 Train-Steps
+        log_interval = self.cfg.get("log_interval", 200)
+        if self.train_steps % log_interval == 0:
+            print(
+                f"  [T{self.train_steps:5d}] "
+                f"FE={fe_val:.4f}  recon={recon_val:.4f}  pred={pred_val:.4f}  "
+                f"kl_raw={kl_raw:.4f}  reward={reward_val:.4f}  "
+                f"lr={self.optimizer.param_groups[0]['lr']:.2e}"
+            )
 
         return {
-            "fe":     float(fe.detach()),
-            "recon":  float(l_recon.detach()),
-            "kl":     kl_val,
-            "action": float(l_action.detach()),
+            "fe":         fe_val,
+            "recon":      recon_val,
+            "pred_img":   pred_val,
+            "kl":         kl_val,
+            "kl_raw":     kl_raw,
+            "action":     act_val,
+            "l_sigma":    sigma_val,   # "sigma" bleibt für den Action-Sigma-Array in step()
+            "l_reward":   reward_val,
             "grad_norms": grad_norms,
         }
 
@@ -1001,24 +1178,36 @@ class IntegratedSystem:
 # ─────────────────────────────────────────────
 
 def run_demo():
+    import sys
+    # --headless: kein Matplotlib, nur Konsolen-Ausgabe (für automatisiertes Testen)
+    headless = "--headless" in sys.argv
+    n_steps  = 300
+    for arg in sys.argv[1:]:
+        if arg.startswith("--steps="):
+            n_steps = int(arg.split("=")[1])
+
     config = {
         "buffer_size":         1000,
         "batch_size":          16,
         "lr":                  1e-3,
         "beta_max":            0.05,
         "beta_warmup":         200,
-        "n_steps":             300,
+        "n_steps":             n_steps,
         "scene_switch_steps":  30,
         "min_gemini_interval": 8,
         "max_gemini_interval": 60,
+        "log_interval":        50,   # Konsolen-Log alle N Train-Steps
     }
 
     api_key = os.environ.get("GEMINI_API_KEY", "")
-    print("B16 – Vollintegration")
-    print(f"  Komponenten: B02–B15 alle aktiv")
+    print("=" * 60)
+    print("B16 – Vollintegration (T10: dynamics_head | T14: reward_head)")
+    print("=" * 60)
     print(f"  ACTION_DIM:  {ACTION_DIM}")
     print(f"  LATENT_DIM:  {LATENT_DIM}")
     print(f"  D_MODEL:     {D_MODEL}")
+    print(f"  Steps:       {n_steps}")
+    print(f"  Headless:    {headless}")
     print()
     print("Gemini:")
     gemini = GeminiClients(api_key=api_key)
@@ -1032,34 +1221,47 @@ def run_demo():
             sum(p.numel() for p in system.transformer.parameters()) +
             sum(p.numel() for p in system.action_head.parameters())
     )
-    print(f"Gesamt-Parameter: {total_params:,}")
+    # Dynamics-Head Parameter separat anzeigen (T10)
+    dyn_params = sum(p.numel() for p in system.transformer.dynamics_head.parameters())
+    print(f"Gesamt-Parameter: {total_params:,}  (davon dynamics_head: {dyn_params:,})")
     print(f"Steps: {config['n_steps']}")
+    print(f"Logs:  logs/steps_{system._log_ts}.csv")
+    print(f"       logs/train_{system._log_ts}.csv")
+    print(f"       logs/gemini_{system._log_ts}.csv")
     print()
 
-    # ── Matplotlib ────────────────────────────────────────
-    fig = plt.figure(figsize=(17, 11))
-    fig.suptitle(
-        'B16 – Vollintegration: Online Learning mit Gemini ER',
-        fontsize=13, fontweight='bold'
-    )
-    gs = gridspec.GridSpec(3, 5, figure=fig, hspace=0.55, wspace=0.38)
+    if headless:
+        fig = None
+        ax_obs = ax_recon = ax_action = ax_goal = ax_info = None
+        ax_fe = ax_rewards = ax_gemini = None
+        ax_prog = ax_online = ax_ros = None
+        gem_call_steps = []
+    else:
+        # ── Matplotlib ────────────────────────────────────────
+        fig = plt.figure(figsize=(17, 11))
+        fig.suptitle(
+            'B16 – Vollintegration: Online Learning mit Gemini ER',
+            fontsize=13, fontweight='bold'
+        )
+        gs = gridspec.GridSpec(3, 5, figure=fig, hspace=0.55, wspace=0.38)
 
-    # Zeile 0: Obs, Recon, Aktion, Ziel, Info
-    ax_obs    = fig.add_subplot(gs[0, 0])
-    ax_recon  = fig.add_subplot(gs[0, 1])
-    ax_action = fig.add_subplot(gs[0, 2])
-    ax_goal   = fig.add_subplot(gs[0, 3])
-    ax_info   = fig.add_subplot(gs[0, 4]); ax_info.axis('off')
+        # Zeile 0: Obs, Recon, Aktion, Ziel, Info
+        ax_obs    = fig.add_subplot(gs[0, 0])
+        ax_recon  = fig.add_subplot(gs[0, 1])
+        ax_action = fig.add_subplot(gs[0, 2])
+        ax_goal   = fig.add_subplot(gs[0, 3])
+        ax_info   = fig.add_subplot(gs[0, 4]); ax_info.axis('off')
 
-    # Zeile 1: Free Energy, Rewards, Gemini-Interval
-    ax_fe      = fig.add_subplot(gs[1, :2])
-    ax_rewards = fig.add_subplot(gs[1, 2:4])
-    ax_gemini  = fig.add_subplot(gs[1, 4]); ax_gemini.axis('off')
+        # Zeile 1: Free Energy, Rewards, Gemini-Interval
+        ax_fe      = fig.add_subplot(gs[1, :2])
+        ax_rewards = fig.add_subplot(gs[1, 2:4])
+        ax_gemini  = fig.add_subplot(gs[1, 4]); ax_gemini.axis('off')
 
-    # Zeile 2: Goal Progress, Online Learning, ROS2
-    ax_prog    = fig.add_subplot(gs[2, :2])
-    ax_online  = fig.add_subplot(gs[2, 2:4])
-    ax_ros     = fig.add_subplot(gs[2, 4]); ax_ros.axis('off')
+        # Zeile 2: Goal Progress, Online Learning, ROS2
+        ax_prog    = fig.add_subplot(gs[2, :2])
+        ax_online  = fig.add_subplot(gs[2, 2:4])
+        ax_ros     = fig.add_subplot(gs[2, 4]); ax_ros.axis('off')
+        gem_call_steps = []
 
     scene_idx = 0
     scene     = SCENE_TYPES[scene_idx]
@@ -1067,7 +1269,6 @@ def run_demo():
     # Initial Goal setzen
     system.set_goal(f"find the {scene.replace('_', ' ')}")
 
-    gem_call_steps = []
     last_result    = {}
 
     print(f"Starte Online-Learning Loop: {config['n_steps']} Steps\n")
@@ -1095,11 +1296,11 @@ def run_demo():
         if result["gem_called"]:
             gem_call_steps.append(step)
             ass = system.last_gemini_result
-            print(f"  [Step {step:4d}] Gemini ER: r={ass['reward']:.3f}  "
-                  f"'{ass.get('situation','')[:45]}'")
+            print(f"  [Step {step:4d}] Gemini: r={ass['reward']:.3f}  "
+                  f"'{ass.get('situation','')[:50]}'")
 
-        # Visualisierung
-        if step % 20 == 0 or step == config["n_steps"] - 1:
+        # Visualisierung (nur wenn nicht headless)
+        if not headless and (step % 20 == 0 or step == config["n_steps"] - 1):
             m       = system.metrics
             steps_x = list(range(len(m["r_total"])))
 
@@ -1357,34 +1558,34 @@ def run_demo():
 
             plt.pause(0.03)
 
-    # ── Finale Ausgabe ────────────────────────────────────
+    # ── Finale Konsolen-Ausgabe ───────────────────────────
     m = system.metrics
-    print("\nVollintegration abgeschlossen!")
-    print(f"  Steps total:       {system.total_steps}")
-    print(f"  Training Steps:    {system.train_steps}")
-    print(f"  Gemini ER Calls:   {system.adaptive.calls}")
-    print(f"  Call-Rate:         {system.adaptive.call_rate*100:.1f}%")
-    print(f"  Gemini Labels:     {system.replay.gemini_count}")
     print()
-    print(f"  Free Energy final: {m['fe'][-1]:.5f}" if m['fe'] else "")
-    print(f"  Recon final:       {m['recon'][-1]:.5f}" if m['recon'] else "")
-    print(f"  Total Reward Ø:    {np.mean(m['r_total'][-20:]):.4f}")
-    print()
-    print("Online Learning Prinzip:")
-    print("  1. Lokales Modell lernt ständig (low-res 16×16)")
-    print("  2. Gemini ER bewertet adaptiv (high-res 128×128)")
-    print("  3. Gemini-Labels im Buffer → gewichtetes Training")
-    print("  4. Interval wächst → Modell wird selbstständiger")
-    print("  5. Kein Human Loopback nötig")
-    print()
-    print("Nächste Schritte:")
-    print("  B17 – MiniWorld Env live (echte Kamera)")
-    print("  B18 – Visualisierungs-Dashboard")
+    # Log-Dateien schließen
+    system._log_steps.close()
+    system._log_train.close()
+    system._log_gemini.close()
 
-    try:
-        plt.show()
-    except KeyboardInterrupt:
-        pass
+    print()
+    print("=" * 60)
+    print("Vollintegration abgeschlossen!")
+    print("=" * 60)
+    print(f"  Steps total:    {system.total_steps}")
+    print(f"  Training Steps: {system.train_steps}")
+    print(f"  Gemini Calls:   {system.adaptive.calls}  ({system.adaptive.call_rate*100:.1f}%)")
+    if m["fe"]:
+        print(f"  FE final:       {m['fe'][-1]:.5f}  "
+              f"recon={m['recon'][-1]:.5f}  pred={m.get('pred_img',[0])[-1]:.5f}  "
+              f"kl_raw={m.get('kl_raw',[0])[-1]:.5f}")
+    print(f"  Reward Ø(20):   {np.mean(m['r_total'][-20:]):.4f}")
+    print()
+    print(f"  Logs: logs/*_{system._log_ts}.csv")
+
+    if not headless:
+        try:
+            plt.show()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":

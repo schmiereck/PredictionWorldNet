@@ -167,6 +167,58 @@ im Bottleneck verloren.
 
 ---
 
+---
+
+### T10 (neu) – Aktions-konditioniertes Transitions-Modell ✅ ERLEDIGT
+**Problem:** `pred_z_next = next_z_head(context)` war action-agnostisch.
+Der Gradient wusste nicht, wie verschiedene Aktionen unterschiedliche
+Zukünfte erzeugen.
+
+**Lösung:**
+- [x] `next_z_head` durch `dynamics_head` ersetzt:
+  ```python
+  dynamics_head = nn.Sequential(
+      nn.Linear(D_MODEL + ACTION_DIM, 256), nn.ReLU(True),
+      nn.Linear(256, LATENT_DIM)
+  )
+  ```
+- [x] Neue Methode `predict_next_z(context, action)` im `TemporalTransformer`
+- [x] In `step()`: echte Aktion `action_np` übergeben (action-conditioned inference)
+- [x] In `_train_step()`: Buffer-Aktion `acts` übergeben (action-conditioned training)
+- [x] Checkpoint-Migration: partial-load wenn alter Checkpoint `next_z_head` hat
+- [x] Strukturiertes CSV-Logging: `logs/steps_*.csv`, `logs/train_*.csv`, `logs/gemini_*.csv`
+  (über `total_step` verknüpfbar, kein langer Konsolen-Spam)
+- [x] `run_demo()` Headless-Modus: `python B16FullIntegration.py --headless --steps=N`
+
+**Ergebnis:** Modell lernt P(z_{t+1} | z_t, a_t) – echter World-Model-Kern.
+dynamics_head hat 51.008 Parameter (D_MODEL+ACTION_DIM=134 → 256 → LATENT_DIM).
+
+**Dateien:** `B16FullIntegration.py`
+
+---
+
+---
+
+### T14 (neu) – Reward-Prädiktor im latenten Raum ✅ ERLEDIGT
+
+**Lösung:**
+- [x] `reward_head = Sequential(Linear(LATENT_DIM+ACTION_DIM, 128), ReLU, Linear(128,1), Sigmoid)`
+- [x] Separate Gemini-Stichprobe: `sample(gem_n, require_gemini=True)` – unabhängig von
+  der Gemini-Dichte im Haupt-Batch, zuverlässig ab 2 Gemini-Samples im Buffer
+- [x] `l_reward = F.mse_loss(reward_head(cat([z_rb.detach(), acts])), gemini_rewards)`
+  z.detach(): kein Gradient zurück durch Encoder (Reward-Head nutzt den Latent-Raum, verbiegt ihn nicht)
+- [x] `r_reward_pred` in `step()` (Inference ohne Gemini-Aufruf)
+- [x] Gewicht: `0.1 * l_reward` in FE-Summe
+- [x] Checkpoint: `reward_head` im state_dict; Migrations-Load für ältere Checkpoints
+- [x] CSV-Logging: `l_reward` in `train_*.csv`, `r_reward_pred` in `steps_*.csv`
+
+**Ergebnis:** Modell schätzt Reward für beliebige (z, a)-Paare.
+Baustein für T11 (EFE) und T15 (Imagination).
+
+**Dateien:** `B16FullIntegration.py`
+
+---
+
 ## Abhängigkeiten
 
 ```
