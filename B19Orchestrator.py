@@ -342,11 +342,13 @@ class MiniWorldObsSource(_b17.ObservationSource):
         # Nicht self._obs speichern – get_observation rendert mit Pan
         self._obs = obs
 
+        self.episode_reset = False
         if terminated or truncated:
             obs, _ = self._env.reset()
             self._obs = obs
             self._cam_pan        = 0.0    # Pan zurücksetzen bei Reset
             self._cam_pan_target = 0.0
+            self.episode_reset   = True   # Orchestrator kann Trail löschen
 
     @property
     def obs_shape(self):
@@ -663,6 +665,12 @@ class Orchestrator:
             elif mode == "miniworld":
                 self._scene = "miniworld"
                 self._goal  = self.ml_system.current_goal
+                # Trail bei Episode-Reset löschen (neue Objekt-Positionen)
+                if (isinstance(self.obs_source, MiniWorldObsSource)
+                        and getattr(self.obs_source, "episode_reset", False)
+                        and self.overhead is not None):
+                    self.overhead.clear_trail()
+                    print(f"  [Step {step:4d}] Episode-Reset → Trail gelöscht")
 
             # ── Aktion aus ML-System + Strategie ──────
             ml_result_pre = self.ml_system.step(
