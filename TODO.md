@@ -113,31 +113,10 @@ h_{t+k} = GRU(h_{t+k-1}, decoder(z_{t+k-1}), a_{t+k-1})  # kein echtes Bild nöt
 
 ---
 
-### T13 – Semantischer Selbstbeschreibungs-Kopf
-**Warum:** Das NN soll lernen, eine Beschreibung des aktuellen Zustands zu geben –
-nicht als Text, sondern als strukturierten Vektor der interpretierbar ist.
-In Active Inference: Der Encoder soll nicht nur visuell komprimieren, sondern
-semantisch relevante Merkmale extrahieren.
+### T13 – Semantischer Selbstbeschreibungs-Kopf ✅ ERLEDIGT → DONE.md
 
-**Lösung:** Kleiner Klassifikations-Kopf auf z:
-```python
-scene_head = nn.Sequential(
-    nn.Linear(LATENT_DIM, 128), nn.ReLU(),
-    nn.Linear(128, N_OBJECTS * N_PROPERTIES)
-    # z.B. 6 Objekte × [sichtbar(0/1), x(-1..1), y(-1..1), dist(0..1)]
-)
-```
-Schwache Supervision aus Gemini-Labels: Wenn Gemini sagt "red box visible, center, close",
-wird diese Information als Ziel-Label auf den Beschreibungs-Kopf trainiert.
-
-Alternativ/Ergänzend: CLIP-Konsistenz-Loss – z soll ähnlich zu CLIP-Embeddings
-von Szene-Beschreibungen sein.
-
-**Ergebnis:** `z` repräsentiert nicht nur "wie sieht es aus" sondern "was ist da".
-Dies ist die Grundlage für Planning jenseits reiner Bildgenerierung.
-
-**Dateien:** `B16FullIntegration.py`, `B13GeminiApi.py` (Label-Extraktion)
-**Aufwand:** Mittel | **Nutzen:** Hoch
+`scene_head(z) → N_SCENE_CLASSES` mit SCENE_VOCAB + SCENE_LABEL_MAP implementiert.
+`scene_pred` in steps-CSV; l_scene in train-CSV.
 
 ---
 
@@ -250,7 +229,7 @@ T18  FE-Dashboard                            ← Begleitend zu T11/T15
 | Transition-Modell       | P(s_{t+1}\|s_t, **a_t**)          | ✅ T10       |      |
 | EFE-Aktionswahl         | Aktionen minimieren EFE            | ❌ fehlt     | T11  |
 | GRU-Weltzustand         | Q(s_t\|o_{0:t}, a_{0:t}) (RSSM)   | ❌ fehlt     | T12  |
-| Semantik-Kopf           | P(label\|s) – Szene beschreiben   | ❌ fehlt     | T13  |
+| Semantik-Kopf           | P(label\|s) – Szene beschreiben   | ✅ T13       |      |
 | Reward-Prädiktor        | Pragmatischer Prior P(o\|bevorzugt)| ✅ T14       |      |
 | Imagination             | Planning-as-Inference              | ❌ fehlt     | T15  |
 | Größerer Latent         | Reicherer Zustandsraum             | ❌ fehlt     | T16  |

@@ -219,6 +219,25 @@ Baustein für T11 (EFE) und T15 (Imagination).
 
 ---
 
+### T13 (neu) – Semantischer Selbstbeschreibungs-Kopf ✅ ERLEDIGT
+
+**Lösung:**
+- [x] `SCENE_VOCAB` (8 Klassen) + `SCENE_LABEL_MAP` (Gemini-Labels → Index) als Konstanten
+- [x] `scene_head = Sequential(Linear(64→128), ReLU, Linear(128→8))`
+- [x] `_label_to_vocab_idx(label)` Helfer: Schlüsselwort-Matching (Deutsch + Englisch)
+- [x] Training: zufällige Stichprobe aus Gemini-gelabelten Buffer-Einträgen (`require_gemini=True`)
+- [x] `l_scene = cross_entropy(scene_head(z.detach()), label_indices)` – z.detach() schützt Encoder
+- [x] Gewicht: `0.1 * l_scene` in FE-Summe
+- [x] `scene_pred` (Vokabular-String) in `step()` + in `steps_*.csv`
+- [x] Checkpoint: `scene_head` im state_dict
+
+**Verhalten:** Braucht viele Gemini-Calls zum Konvergieren (jede Szene mehrfach besucht).
+In 120-Step-Demo: l_scene fällt von 2.05 auf ~1.3 mit nur 3 Gemini-Samples.
+
+**Dateien:** `B16FullIntegration.py`
+
+---
+
 ## Abhängigkeiten
 
 ```

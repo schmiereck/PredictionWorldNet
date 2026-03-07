@@ -93,6 +93,26 @@ LATENT_DIM  = 64
 D_MODEL     = 128
 OBS_SHAPE   = (128, 128, 3)
 
+# T13: Szenen-Vokabular für den Beschreibungs-Kopf (scene_head)
+# Abbildung von Gemini-training_labels auf feste Klassen-Indizes.
+# Letzte Klasse "unknown" fängt alle nicht erkannten Labels ab.
+SCENE_VOCAB = [
+    "red_box", "yellow_box", "orange_box", "white_box",
+    "green_ball", "blue_ball",
+    "exploring", "unknown",
+]
+# Schlüsselwörter (Kleinschreibung) → Vokabular-Index
+SCENE_LABEL_MAP = {
+    "red_box":    0, "red box":   0, "rote":   0, "roter":  0, "red":     0,
+    "yellow_box": 1, "yellow":    1, "gelbe":  1, "gelber": 1,
+    "orange_box": 2, "orange":    2,
+    "white_box":  3, "white":     3, "weiss":  3, "weiße":  3, "weis":    3,
+    "green_ball": 4, "green":     4, "grüne":  4, "grüner": 4, "grün":    4,
+    "blue_ball":  5, "blue":      5, "blaue":  5, "blauer": 5, "blau":    5,
+    "exploring":  6, "erkunden":  6, "korridor": 6, "corridor": 6, "ecke": 6,
+}
+N_SCENE_CLASSES = len(SCENE_VOCAB)
+
 SCENE_TYPES = ["red_box", "blue_ball", "green_door", "corridor", "corner"]
 SCENE_GOALS = {
     "red_box":    "find the red box",
@@ -317,14 +337,15 @@ class ReplayBuffer:
         else:
             idx = np.random.choice(self.size, batch_size, replace=False)
         return {
-            "obs":           torch.from_numpy(self.obs[idx]).float()/255.0,
-            "next_obs":      torch.from_numpy(self.next_obs[idx]).float()/255.0,
-            "actions":       torch.from_numpy(self.actions[idx]),
-            "rewards":       torch.from_numpy(self.rewards[idx]),
-            "goals":         [self.goals[i] for i in idx],
-            "gemini_rewards":torch.from_numpy(
+            "obs":            torch.from_numpy(self.obs[idx]).float()/255.0,
+            "next_obs":       torch.from_numpy(self.next_obs[idx]).float()/255.0,
+            "actions":        torch.from_numpy(self.actions[idx]),
+            "rewards":        torch.from_numpy(self.rewards[idx]),
+            "goals":          [self.goals[i] for i in idx],
+            "gemini_rewards": torch.from_numpy(
                 np.nan_to_num(self.gemini_rewards[idx], nan=0.0)
             ),
+            "gemini_labels":  [self.gemini_labels[i] for i in idx],
         }
 
     @property
@@ -573,6 +594,13 @@ class IntegratedSystem:
             nn.Linear(LATENT_DIM + ACTION_DIM, 128), nn.ReLU(True),
             nn.Linear(128, 1), nn.Sigmoid(),
         )
+        # T13: Semantischer Beschreibungs-Kopf P(label | z_t)
+        # Das Modell lernt aus z zu beschreiben, was es sieht.
+        # Schwache Supervision durch Gemini training_labels.
+        self.scene_head = nn.Sequential(
+            nn.Linear(LATENT_DIM, 128), nn.ReLU(True),
+            nn.Linear(128, N_SCENE_CLASSES),
+        )
 
         # Buffer
         self.replay = ReplayBuffer(max_size=config["buffer_size"])
@@ -598,7 +626,8 @@ class IntegratedSystem:
                 list(self.transformer.parameters()) +
                 list(self.action_head.parameters()) +
                 list(self.goal_proj.parameters()) +
-                list(self.reward_head.parameters())
+                list(self.reward_head.parameters()) +
+                list(self.scene_head.parameters())
         )
         self.optimizer = torch.optim.AdamW(
             all_params, lr=config["lr"], weight_decay=1e-3
@@ -610,7 +639,8 @@ class IntegratedSystem:
 
         # Metriken
         self.metrics = {k: [] for k in [
-            "fe", "recon", "pred_img", "kl", "kl_raw", "action", "l_sigma", "l_reward",
+            "fe", "recon", "pred_img", "kl", "kl_raw", "action",
+            "l_sigma", "l_reward", "l_scene",
             "r_intrinsic", "r_gemini", "r_reward_pred", "r_total",
             "goal_progress", "gemini_interval",
             "gemini_call_rate", "lr",
@@ -637,18 +667,27 @@ class IntegratedSystem:
         # Header
         self._csv_steps.writerow([
             "total_step", "r_intr", "r_gemini", "r_reward_pred", "r_total",
-            "sigma_mean", "novelty", "goal", "scene", "gem_called",
+            "sigma_mean", "novelty", "scene_pred", "goal", "scene", "gem_called",
         ])
         self._csv_train.writerow([
             "train_step", "total_step", "fe", "recon", "pred_img",
-            "kl", "kl_raw", "action", "l_sigma", "l_reward", "goal_loss", "cam_center",
-            "lr", "beta",
-            "grad_enc", "grad_dec", "grad_tr", "grad_ah", "grad_gp", "grad_rh",
+            "kl", "kl_raw", "action", "l_sigma", "l_reward", "l_scene",
+            "goal_loss", "cam_center", "lr", "beta",
+            "grad_enc", "grad_dec", "grad_tr", "grad_ah", "grad_gp", "grad_rh", "grad_sh",
         ])
         self._csv_gemini.writerow([
             "total_step", "reward", "goal_progress", "situation",
             "recommendation", "action_hint", "training_label", "goal",
         ])
+
+    @staticmethod
+    def _label_to_vocab_idx(label: str) -> int:
+        """T13: Gemini training_label → SCENE_VOCAB-Index (0..N_SCENE_CLASSES-1)."""
+        lower = label.lower()
+        for key, idx in SCENE_LABEL_MAP.items():
+            if key in lower:
+                return idx
+        return N_SCENE_CLASSES - 1  # "unknown"
 
     def set_goal(self, user_cmd: str):
         """Neues Ziel via Gemini Text-Interface (B13)."""
@@ -689,6 +728,7 @@ class IntegratedSystem:
             "action_head":  self.action_head.state_dict(),
             "goal_proj":    self.goal_proj.state_dict(),
             "reward_head":  self.reward_head.state_dict(),   # T14
+            "scene_head":   self.scene_head.state_dict(),    # T13
             # Optimizer & Scheduler
             "optimizer":    self.optimizer.state_dict(),
             "scheduler":    self.scheduler.state_dict(),
@@ -782,6 +822,14 @@ class IntegratedSystem:
                 if strict:
                     raise
                 print(f"    RewardHead: übersprungen ({e})")
+        if "scene_head" in checkpoint:
+            try:
+                self.scene_head.load_state_dict(
+                    checkpoint["scene_head"], strict=strict)
+            except RuntimeError as e:
+                if strict:
+                    raise
+                print(f"    SceneHead: übersprungen ({e})")
 
         # Optimizer/Scheduler
         if load_optimizer and "optimizer" in checkpoint:
@@ -831,7 +879,7 @@ class IntegratedSystem:
         # ── Forward Pass (Inference) ────────────────────────
         self.encoder.eval(); self.decoder.eval()
         self.transformer.eval(); self.action_head.eval()
-        self.reward_head.eval()
+        self.reward_head.eval(); self.scene_head.eval()
 
         with torch.no_grad():
             x    = torch.from_numpy(obs_np).float().permute(2,0,1).unsqueeze(0)/255.0
@@ -863,6 +911,10 @@ class IntegratedSystem:
             r_reward_pred = float(
                 self.reward_head(torch.cat([z, a_t], dim=-1)).squeeze().item()
             )
+            # T13: Szenen-Beschreibung aus z – was sieht das Modell gerade?
+            scene_logits = self.scene_head(z)
+            scene_idx    = int(scene_logits.argmax(dim=-1).item())
+            scene_pred   = SCENE_VOCAB[scene_idx]
 
         # ── Intrinsic Reward: echter Prediction-Error (pred vs. nächstes Bild)
         r_intr = float(F.mse_loss(pred_obs,
@@ -930,7 +982,7 @@ class IntegratedSystem:
         )
         self.metrics["gemini_call_rate"].append(self.adaptive.call_rate)
         self.metrics["lr"].append(self.optimizer.param_groups[0]["lr"])
-        for k in ["fe", "recon", "pred_img", "kl", "kl_raw", "action", "l_sigma", "l_reward"]:
+        for k in ["fe", "recon", "pred_img", "kl", "kl_raw", "action", "l_sigma", "l_reward", "l_scene"]:
             self.metrics[k].append(train_info.get(k, 0.0))
         self.metrics["r_reward_pred"].append(r_reward_pred)
 
@@ -939,7 +991,7 @@ class IntegratedSystem:
         self._csv_steps.writerow([
             self.total_steps, round(r_intr, 6), round(r_gemini, 4),
             round(r_reward_pred, 4), round(r_total, 4), round(sigma_mean, 4),
-            round(novelty, 4), self.current_goal, scene, int(gem_called),
+            round(novelty, 4), scene_pred, self.current_goal, scene, int(gem_called),
         ])
         self._log_steps.flush()
 
@@ -965,6 +1017,7 @@ class IntegratedSystem:
             "r_total":        r_total,
             "goal_prog":      goal_prog,
             "gem_called":     gem_called,
+            "scene_pred":     scene_pred,       # T13: Szenen-Beschreibung aus z
             "pred_obs":       pred_obs.squeeze(0).permute(1,2,0).detach().numpy(),
             "pred_action":    pred_action.squeeze(0).detach().numpy(),
             "sigma":          pred_sigma.squeeze(0).detach().numpy(),
@@ -982,7 +1035,7 @@ class IntegratedSystem:
 
         self.encoder.train(); self.decoder.train()
         self.transformer.train(); self.action_head.train()
-        self.reward_head.train()
+        self.reward_head.train(); self.scene_head.train()
 
         obs  = batch["obs"].permute(0,3,1,2)
         nobs = batch["next_obs"].permute(0,3,1,2)
@@ -1064,6 +1117,25 @@ class IntegratedSystem:
         else:
             l_reward = torch.tensor(0.0, device=obs.device)
 
+        # T13: Szenen-Beschreibungs-Loss – schwache Supervision aus Gemini-Labels.
+        # Zufällige Stichprobe aus allen Gemini-gelabelten Einträgen (require_gemini=True).
+        # gemini_labels sind im gleichen sample() abrufbar.
+        # z.detach(): scene_head lernt aus dem Latent-Raum, verändert ihn nicht.
+        if gem_n >= 2:
+            rb_s = self.replay.sample(gem_n, require_gemini=True)
+            if rb_s is not None and any(rb_s["gemini_labels"]):
+                label_indices = torch.tensor(
+                    [self._label_to_vocab_idx(lbl) for lbl in rb_s["gemini_labels"]],
+                    dtype=torch.long, device=obs.device
+                )
+                with torch.no_grad():
+                    _, _, z_s = self.encoder(rb_s["obs"].permute(0, 3, 1, 2))
+                l_scene = F.cross_entropy(self.scene_head(z_s.detach()), label_indices)
+            else:
+                l_scene = torch.tensor(0.0, device=obs.device)
+        else:
+            l_scene = torch.tensor(0.0, device=obs.device)
+
         fe = (1.0  * l_recon +
               0.5  * l_pred_img +       # Nächst-Frame-Prediction im Bildraum
               self.beta * l_kl +
@@ -1073,7 +1145,8 @@ class IntegratedSystem:
               0.1  * l_goal +
               0.2  * l_gemini +
               0.05 * l_cam_center +
-              0.1  * l_reward)          # T14: Reward-Prädiktor
+              0.1  * l_reward +         # T14: Reward-Prädiktor
+              0.1  * l_scene)           # T13: Szenen-Beschreibung
 
         self.optimizer.zero_grad()
         fe.backward()
@@ -1090,6 +1163,7 @@ class IntegratedSystem:
             "action_head": _grad_norm(self.action_head),
             "goal_proj":   _grad_norm(self.goal_proj),
             "reward_head": _grad_norm(self.reward_head),
+            "scene_head":  _grad_norm(self.scene_head),
         }
 
         torch.nn.utils.clip_grad_norm_(
@@ -1098,7 +1172,8 @@ class IntegratedSystem:
             list(self.transformer.parameters()) +
             list(self.action_head.parameters()) +
             list(self.goal_proj.parameters()) +
-            list(self.reward_head.parameters()),
+            list(self.reward_head.parameters()) +
+            list(self.scene_head.parameters()),
             max_norm=1.0
         )
         self.optimizer.step()
@@ -1120,6 +1195,7 @@ class IntegratedSystem:
         cam_val     = float(l_cam_center.detach())
 
         reward_val = float(l_reward.detach())
+        scene_val  = float(l_scene.detach())
 
         # CSV-Logging: train_{ts}.csv (jeder Train-Step)
         gn = grad_norms
@@ -1127,13 +1203,14 @@ class IntegratedSystem:
             self.train_steps, self.total_steps,
             round(fe_val, 6), round(recon_val, 6), round(pred_val, 6),
             round(kl_val, 6), round(kl_raw, 6), round(act_val, 6),
-            round(sigma_val, 6), round(reward_val, 6),
+            round(sigma_val, 6), round(reward_val, 6), round(scene_val, 6),
             round(goal_val, 6), round(cam_val, 6),
             round(self.optimizer.param_groups[0]["lr"], 8),
             round(self.beta, 6),
             round(gn["encoder"], 4), round(gn["decoder"], 4),
             round(gn["transformer"], 4), round(gn["action_head"], 4),
             round(gn["goal_proj"], 4), round(gn["reward_head"], 4),
+            round(gn["scene_head"], 4),
         ])
         if self.train_steps % 20 == 0:
             self._log_train.flush()
@@ -1144,7 +1221,7 @@ class IntegratedSystem:
             print(
                 f"  [T{self.train_steps:5d}] "
                 f"FE={fe_val:.4f}  recon={recon_val:.4f}  pred={pred_val:.4f}  "
-                f"kl_raw={kl_raw:.4f}  reward={reward_val:.4f}  "
+                f"kl_raw={kl_raw:.4f}  reward={reward_val:.4f}  scene={scene_val:.4f}  "
                 f"lr={self.optimizer.param_groups[0]['lr']:.2e}"
             )
 
@@ -1155,8 +1232,9 @@ class IntegratedSystem:
             "kl":         kl_val,
             "kl_raw":     kl_raw,
             "action":     act_val,
-            "l_sigma":    sigma_val,   # "sigma" bleibt für den Action-Sigma-Array in step()
+            "l_sigma":    sigma_val,
             "l_reward":   reward_val,
+            "l_scene":    scene_val,
             "grad_norms": grad_norms,
         }
 
