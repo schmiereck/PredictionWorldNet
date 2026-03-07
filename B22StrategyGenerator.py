@@ -104,6 +104,7 @@ KNOWN_CONDITIONS = {
     "target_centered",    # Ziel in Bildmitte
     "target_close",       # Ziel nah (großer Anteil im Bild)
     "target_far",         # Ziel weit weg (kleiner Anteil)
+    "target_below",       # Ziel im unteren Bilddrittel sichtbar (nah, Kamera zu hoch)
     "pan_done",           # Kamera hat vollen Schwenk abgeschlossen
     "stuck",              # Agent bewegt sich nicht (keine Veränderung)
     "wall_stuck",         # Feststecken AN einer Wand (uniform + stuck)
@@ -127,6 +128,7 @@ KNOWN_ACTIONS = {
     "stop",               # Anhalten
     "random_turn",        # Zufällige Drehung (Exploration)
     "scan_panorama",      # Volle 360° Kamera-Schwenk-Sequenz
+    "tilt_down",          # Kamera leicht nach unten schwenken (Objekt am Boden)
     "escape_wall",        # Wandflucht: Kamera zentrieren → rückwärts → drehen
 }
 
@@ -139,6 +141,7 @@ ACTION_VECTORS = {
     "pan_left":       [ 0.0,  0.0, -0.6,  0.0, 0.0, 0.0],
     "pan_right":      [ 0.0,  0.0,  0.6,  0.0, 0.0, 0.0],
     "center_camera":  [ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0],
+    "tilt_down":      [ 0.0,  0.0,  0.0, -0.35, 0.0, 0.0],  # cam_tilt: ~-16° (Objekt unten)
     "stop":           [ 0.0,  0.0,  0.0,  0.0, 0.0, 0.0],
     "random_turn":    [ 0.0,  0.5,  0.0,  0.0, 0.0, 0.0],  # wird randomisiert
     "scan_panorama":  [ 0.0,  0.0, -0.8,  0.0, 0.0, 0.0],  # sequenziell
@@ -181,6 +184,9 @@ class MockStrategyGenerator(StrategyGenerator):
         rules = [
             # Höchste Priorität: Ziel nah + zentriert → Geschafft
             Rule("target_close",    "stop",          duration=1,  priority=100),
+            # Ziel am unteren Bildrand: Kamera leicht runter (Hinweis, kein Zwang)
+            # Niedrige duration (2) + Sigma-Blending → NN lernt selbst den richtigen Tilt
+            Rule("target_below",    "tilt_down",     duration=2,  priority=93),
             # Wandflucht: Kamera zentrieren → rückwärts → drehen (höher als stuck!)
             Rule("wall_stuck",      "escape_wall",   duration=ESCAPE_WALL_DURATION, priority=97),
             # Langweilige Szene (gegen Wand / r_intr tief) → ebenfalls flüchten

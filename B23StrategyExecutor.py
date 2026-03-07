@@ -116,6 +116,15 @@ class ConditionEvaluator:
         pan_done = abs(cam_pan) > 0.8 and self._pan_steps > 5
         self._pan_steps += 1
 
+        # target_below: Zielpixel konzentriert im unteren Bilddrittel
+        # → Objekt ist nah und am unteren Bildrand (Kamera sollte runterschwenken)
+        if target_mask is not None and img is not None:
+            h = img.shape[0]
+            lower_third = target_mask[h * 2 // 3:, :]
+            target_below = (np.mean(lower_third) > 0.05) and (target_ratio < 0.12)
+        else:
+            target_below = False
+
         conditions = {
             "no_target":       target_ratio < 0.02,
             "target_left":     target_pos == "left",
@@ -123,6 +132,7 @@ class ConditionEvaluator:
             "target_centered": target_pos == "center",
             "target_close":    target_ratio > 0.15,
             "target_far":      0.02 <= target_ratio <= 0.15,
+            "target_below":    target_below,
             "pan_done":        pan_done,
             "stuck":           self._stuck_count >= self.stuck_threshold,
             "wall_stuck":      wall_stuck,

@@ -325,7 +325,9 @@ class MiniWorldObsSource(_b17.ObservationSource):
         delta = self._cam_pan_target - self._cam_pan
         step  = min(abs(delta), self._CAM_PAN_SPEED)
         self._cam_pan += step if delta >= 0 else -step
-        self._cam_tilt = float(ros2["camera"]["tilt"])
+        # Grad → Bogenmass (ros2["camera"]["tilt"] ist in Grad, agent.cam_pitch erwartet
+        # den Wert in Grad NACH Multiplikation mit 180/π — also hier Grad→rad konvertieren)
+        self._cam_tilt = float(ros2["camera"]["tilt"]) * math.pi / 180.0
 
         # Kontinuierlich → diskret (Bewegung)
         if abs(az) > abs(lx):
