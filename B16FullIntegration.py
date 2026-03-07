@@ -159,12 +159,14 @@ def draw_scene(scene_type: str, noise: float = 0.0) -> np.ndarray:
 class Encoder(nn.Module):
     def __init__(self, latent_dim=LATENT_DIM):
         super().__init__()
+        # GroupNorm statt BatchNorm: keine Running Stats → kein Train/Eval-Drift
+        # bei wechselnden Szenen und Kamerawinkeln im Online-Learning
         self.conv = nn.Sequential(
-            nn.Conv2d(3,32,3,stride=2,padding=1), nn.BatchNorm2d(32), nn.ReLU(True),
-            nn.Conv2d(32,64,3,stride=2,padding=1), nn.BatchNorm2d(64), nn.ReLU(True),
-            nn.Conv2d(64,128,3,stride=2,padding=1), nn.BatchNorm2d(128), nn.ReLU(True),
-            nn.Conv2d(128,128,3,stride=2,padding=1), nn.BatchNorm2d(128), nn.ReLU(True),
-            nn.Conv2d(128,128,3,stride=2,padding=1), nn.BatchNorm2d(128), nn.ReLU(True),
+            nn.Conv2d(3,32,3,stride=2,padding=1), nn.GroupNorm(8,32), nn.ReLU(True),
+            nn.Conv2d(32,64,3,stride=2,padding=1), nn.GroupNorm(8,64), nn.ReLU(True),
+            nn.Conv2d(64,128,3,stride=2,padding=1), nn.GroupNorm(8,128), nn.ReLU(True),
+            nn.Conv2d(128,128,3,stride=2,padding=1), nn.GroupNorm(8,128), nn.ReLU(True),
+            nn.Conv2d(128,128,3,stride=2,padding=1), nn.GroupNorm(8,128), nn.ReLU(True),
         )
         # 128x128 → 64→32→16→8→4  ⇒  flatten = 128*4*4 = 2048
         self.fc_mu      = nn.Linear(2048, latent_dim)
@@ -183,16 +185,17 @@ class Decoder(nn.Module):
     def __init__(self, latent_dim=LATENT_DIM):
         super().__init__()
         # 2048 = 128*4*4, reshape zu (128,4,4), deconv → 128x128
+        # GroupNorm statt BatchNorm (konsistent mit Encoder)
         self.fc = nn.Sequential(nn.Linear(latent_dim, 2048), nn.ReLU(True))
         self.deconv = nn.Sequential(
             nn.ConvTranspose2d(128,128,3,stride=2,padding=1,output_padding=1),
-            nn.BatchNorm2d(128), nn.ReLU(True),
+            nn.GroupNorm(8,128), nn.ReLU(True),
             nn.ConvTranspose2d(128,128,3,stride=2,padding=1,output_padding=1),
-            nn.BatchNorm2d(128), nn.ReLU(True),
+            nn.GroupNorm(8,128), nn.ReLU(True),
             nn.ConvTranspose2d(128,64,3,stride=2,padding=1,output_padding=1),
-            nn.BatchNorm2d(64), nn.ReLU(True),
+            nn.GroupNorm(8,64), nn.ReLU(True),
             nn.ConvTranspose2d(64,32,3,stride=2,padding=1,output_padding=1),
-            nn.BatchNorm2d(32), nn.ReLU(True),
+            nn.GroupNorm(8,32), nn.ReLU(True),
             nn.ConvTranspose2d(32,3,3,stride=2,padding=1,output_padding=1),
             nn.Sigmoid(),
         )
@@ -769,12 +772,14 @@ class IntegratedSystem:
                 if len(self.a_hist) >= 2 else None
 
             context = self.transformer(z, goal_emb, z_h, a_h)
-            pred_obs = self.decoder(z)
+            # Echte Nächst-Frame-Vorhersage: pred_z_next → decoder → pred_obs
+            pred_z_next = self.transformer.next_z_head(context)
+            pred_obs    = self.decoder(pred_z_next)
             pred_action, pred_sigma = self.action_head(context)
 
-        # ── Intrinsic Reward (immer) ────────────────────────
+        # ── Intrinsic Reward: echter Prediction-Error (pred vs. nächstes Bild)
         r_intr = float(F.mse_loss(pred_obs,
-                                  x.clone().detach()).item())
+                                  xn.clone().detach()).item())
 
         # ── Novelty (vereinfacht) ───────────────────────────
         novelty = float(np.clip(r_intr * 10, 0, 1))
@@ -881,9 +886,17 @@ class IntegratedSystem:
 
         pred_action, pred_sigma = self.action_head(context)
 
-        # Nächster Frame — Next-Latent-Prediction statt Reconstruction
-        _, _, z_next = self.encoder(nobs)
-        pred_z_next  = self.transformer.next_z_head(context)
+        # Encoder für nächsten Frame (Ziel-Latent, kein Gradient zurück)
+        with torch.no_grad():
+            _, _, z_next = self.encoder(nobs)
+
+        # Nächst-Frame-Prediction: Transformer sagt z_{t+1} voraus
+        pred_z_next   = self.transformer.next_z_head(context)
+
+        # Nächst-Frame-Loss im BILDRAUM – Decoder lernt aus pred_z_next
+        # das nächste Bild zu erzeugen (echter Prediction-Loss, kein Recon)
+        pred_next_img = self.decoder(pred_z_next)
+        l_pred_img    = combined_recon_loss(pred_next_img, nobs, ssim_weight=0.3)
 
         # Losses
         l_recon  = combined_recon_loss(recon, obs, ssim_weight=0.3)
@@ -897,6 +910,7 @@ class IntegratedSystem:
         l_action = (action_weights * (pred_action - acts).pow(2)).mean()
         # Kamera-Zentrierung: NN-Output für pan/tilt zur Mitte regularisieren
         l_cam_center = pred_action[:, 2:4].pow(2).mean()
+        # Latent-Prediction als leichtes Hilfsziel (Hauptsignal: l_pred_img)
         l_next_z = F.mse_loss(pred_z_next, z_next.detach())
         l_goal   = torch.clamp(1 - F.cosine_similarity(
             F.normalize(context[:, :LATENT_DIM], dim=-1), goal_p, dim=-1
@@ -914,13 +928,14 @@ class IntegratedSystem:
         l_gemini   = (gem_weight * (recon - obs).pow(2)).mean()
 
         fe = (1.0  * l_recon +
+              0.5  * l_pred_img +       # Nächst-Frame-Prediction im Bildraum
               self.beta * l_kl +
-              0.3  * l_next_z +
+              0.1  * l_next_z +         # Hilfsziel Latent (reduziert, l_pred_img übernimmt)
               0.2  * l_action +
               0.05 * l_sigma +
               0.1  * l_goal +
               0.2  * l_gemini +
-              0.05 * l_cam_center)  # Kamera zur Mitte halten
+              0.05 * l_cam_center)
 
         self.optimizer.zero_grad()
         fe.backward()
