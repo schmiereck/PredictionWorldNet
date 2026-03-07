@@ -888,7 +888,15 @@ class IntegratedSystem:
         # Losses
         l_recon  = combined_recon_loss(recon, obs, ssim_weight=0.3)
         l_kl     = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
-        l_action = F.mse_loss(pred_action, acts)
+        # Action-Loss: Kamera-Dimensionen (2=pan, 3=tilt) stark downgewichtet,
+        # da strategie-dominierte Trainingsdaten sonst einen Links-Bias einlernen.
+        action_weights = torch.tensor(
+            [1.0, 1.0, 0.05, 0.05, 0.3, 0.3],
+            dtype=torch.float32, device=pred_action.device
+        )
+        l_action = (action_weights * (pred_action - acts).pow(2)).mean()
+        # Kamera-Zentrierung: NN-Output für pan/tilt zur Mitte regularisieren
+        l_cam_center = pred_action[:, 2:4].pow(2).mean()
         l_next_z = F.mse_loss(pred_z_next, z_next.detach())
         l_goal   = torch.clamp(1 - F.cosine_similarity(
             F.normalize(context[:, :LATENT_DIM], dim=-1), goal_p, dim=-1
@@ -911,7 +919,8 @@ class IntegratedSystem:
               0.2  * l_action +
               0.05 * l_sigma +
               0.1  * l_goal +
-              0.2  * l_gemini)   # Gemini-gewichteter Term
+              0.2  * l_gemini +
+              0.05 * l_cam_center)  # Kamera zur Mitte halten
 
         self.optimizer.zero_grad()
         fe.backward()
