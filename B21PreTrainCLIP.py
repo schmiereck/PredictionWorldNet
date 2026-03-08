@@ -90,6 +90,8 @@ def _register_prediction_world_env(gym):
             self.place_entity(Ball(color="green"))
             self.place_entity(Ball(color="blue"))
             self.place_agent()
+            from B16FullIntegration import CAM_HEIGHT
+            self.agent.cam_height = CAM_HEIGHT
 
     gym.register(id=env_id,
                  entry_point=lambda **kw: PredictionWorldRoom(**kw),
@@ -109,6 +111,8 @@ def _register_empty_env(gym):
                                min_z=0, max_z=self.size)
             self.box = None   # OneRoom.step() erwartet self.box
             self.place_agent()
+            from B16FullIntegration import CAM_HEIGHT
+            self.agent.cam_height = CAM_HEIGHT
 
         def step(self, action):
             # Kein Zielobjekt → nur Basis-Step ohne near(self.box)-Check
@@ -150,6 +154,8 @@ def _register_single_env(gym):
             ent = Box(color=color) if etype == "box" else Ball(color=color)
             self.box = self.place_entity(ent)   # OneRoom.step() erwartet self.box
             self.place_agent()
+            from B16FullIntegration import CAM_HEIGHT
+            self.agent.cam_height = CAM_HEIGHT
 
     gym.register(id=env_id,
                  entry_point=lambda **kw: PredictionWorldSingle(**kw),

@@ -87,6 +87,8 @@ def _register_prediction_world_env(gym):
             self.place_entity(Ball(color="green"))
             self.place_entity(Ball(color="blue"))
             self.place_agent()
+            from B16FullIntegration import CAM_HEIGHT
+            self.agent.cam_height = CAM_HEIGHT
 
     gym.register(id=env_id,
                  entry_point=lambda **kw: PredictionWorldRoom(**kw),

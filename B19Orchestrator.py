@@ -161,6 +161,9 @@ def _register_prediction_world_env(gym):
             self.ball_blue  = self.place_entity(Ball(color="blue"))
 
             self.place_agent()
+            # Kamera tiefer setzen (Hexapod-Perspektive)
+            from B16FullIntegration import CAM_HEIGHT
+            self.agent.cam_height = CAM_HEIGHT
 
     gym.register(
         id=env_id,
