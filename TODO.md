@@ -90,22 +90,10 @@ Eigene Gemini-Stichprobe (require_gemini=True); `r_reward_pred` in steps-CSV.
 
 ## 🟢 Priorität 3 – Skalierung und Planung
 
-### T15 – Mehrstufige Imagination (Planning-as-Inference)
-**Warum:** Das Herzstück des Active Inference Ansatzes: Der Agent plant nicht
-durch echte Aktionen in der Welt, sondern durch **Simulation im Weltzustand**.
+### T15 – Mehrstufige Imagination (Planning-as-Inference) ✅ ERLEDIGT → DONE.md
 
-```
-Für k Schritte vorausplanen:
-z_{t+1} = dynamics(z_t, a_t)         # Transition (T10)
-r_{t+1} = reward_head(z_{t+1}, a_t)  # Reward-Vorhersage (T14)
-EFE(a_t) += r_{t+1} + sigma(z_{t+1}) # EFE akkumulieren
-
-→ Wähle Aktionssequenz mit minimalem EFE
-```
-
-**Voraussetzungen:** T10 + T12 (RSSM) + T14 (Reward-Prädiktor)
-**Dateien:** Neues Modul `B24ImaginaryRollout.py`
-**Aufwand:** Hoch | **Nutzen:** Sehr Hoch (echter World-Model-Planer)
+`plan_action()` in IntegratedSystem: Random Shooting mit N=32, H=5.
+B19 nutzt geplante Aktion als nn_action im Strategy-Blend.
 
 ---
 
@@ -160,7 +148,7 @@ T18  FE-Dashboard                            ← Begleitend zu T11/T15
 | GRU-Weltzustand         | Q(s_t\|o_{0:t}, a_{0:t}) (RSSM)   | ❌ fehlt     | T12  |
 | Semantik-Kopf           | P(label\|s) – Szene beschreiben   | ✅ T13       |      |
 | Reward-Prädiktor        | Pragmatischer Prior P(o\|bevorzugt)| ✅ T14       |      |
-| Imagination             | Planning-as-Inference              | ❌ fehlt     | T15  |
+| Imagination             | Planning-as-Inference              | ✅ T15       |      |
 | Größerer Latent         | Reicherer Zustandsraum             | ✅ T16       |      |
 | Offline Dynamics        | Vortraining dynamics_head          | ✅ T17       |      |
 | FE Dashboard            | Complexity/Inaccuracy sichtbar     | ✅ T18       |      |

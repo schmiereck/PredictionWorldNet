@@ -376,6 +376,45 @@ l_action += efe_blend * l_efe_t + (1 - efe_blend) * l_imitation_t
 
 ---
 
+### T15 – Mehrstufige Imagination (Planning-as-Inference) ✅ ERLEDIGT
+
+**Problem:** Der Agent handelte nur reaktiv — ActionHead gibt direkt eine Aktion
+basierend auf dem aktuellen Zustand. In Active Inference plant der Agent durch
+**Simulation im World-Model** mehrere Schritte voraus.
+
+**Lösung:** `plan_action()` Methode in `IntegratedSystem` (B16):
+
+```python
+@torch.no_grad()
+def plan_action(self, obs_np, horizon=5, n_candidates=32, discount=0.95):
+    # 1. Aktuellen Zustand encodieren → z_cur, h_cur
+    # 2. N Kandidaten-Sequenzen sampeln (um ActionHead ± sigma)
+    # 3. Für jeden Horizont-Schritt:
+    #    - dynamics_head(h, action) → z_next  (Zustandsvorhersage)
+    #    - GRU(z_next, action, goal) → h_next (Hidden-State Update)
+    #    - reward_head(z_next, action) → r     (Bewertung)
+    #    - cum_reward += discount^t * r
+    # 4. Beste erste Aktion zurückgeben
+```
+
+**Algorithmus:** Random Shooting (N=32 Kandidaten, H=5 Schritte).
+Erste Aktion um ActionHead-Vorschlag ± sigma gesampelt.
+Folge-Aktionen via ActionHead auf imaginiertem State + geringem Rauschen.
+
+**Aktivierung:** Erst ab `gemini_count >= EFE_GEMINI_RAMP` (50 Samples),
+damit reward_head valide Bewertungen liefern kann.
+
+**B19-Integration:** `plan_action()` liefert `nn_action` für Strategy-Blend.
+Bei hohem sigma (frühes Training) dominiert weiterhin Strategy,
+bei niedrigem sigma übernimmt die geplante Aktion.
+
+**Wichtig:** RSSM `_h` wird NICHT verändert — Planning nutzt GRU direkt
+mit kopiertem State. Kein Seiteneffekt auf den echten Hidden-State.
+
+**Dateien:** `B16FullIntegration.py` (plan_action), `B19Orchestrator.py` (Integration)
+
+---
+
 ## Empfohlene Reihenfolge
 
 1. **T01** – Reward-Normalisierung (schneller Fix, großer Effekt)

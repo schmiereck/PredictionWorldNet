@@ -699,8 +699,14 @@ class Orchestrator:
                 strategy_action = self.strategy_exec.get_action(obs_info)
 
                 if strategy_action is not None:
-                    # NN-Aktion als Fallback/Blending-Partner
-                    nn_action = self._get_miniworld_action(step)
+                    # T15: Imagination als NN-Aktion (wenn genug Daten)
+                    plan_result = self.ml_system.plan_action(
+                        obs.image, horizon=5, n_candidates=32
+                    )
+                    if plan_result.get("plan_used"):
+                        nn_action = plan_result["action"]
+                    else:
+                        nn_action = self._get_miniworld_action(step)
                     # Sigma aus letztem Step (wenn verfügbar)
                     last_sigma = (self.ml_system.metrics.get("sigma", [0.5])[-1]
                                   if self.ml_system.metrics.get("sigma") else 0.5)
@@ -708,7 +714,14 @@ class Orchestrator:
                         strategy_action, nn_action, last_sigma
                     )
                 else:
-                    act_arr = self._get_miniworld_action(step)
+                    # T15: Auch ohne Strategy — Imagination nutzen
+                    plan_result = self.ml_system.plan_action(
+                        obs.image, horizon=5, n_candidates=32
+                    )
+                    if plan_result.get("plan_used"):
+                        act_arr = plan_result["action"]
+                    else:
+                        act_arr = self._get_miniworld_action(step)
             elif mode == "miniworld":
                 act_arr = self._get_miniworld_action(step)
             else:

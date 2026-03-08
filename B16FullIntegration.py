@@ -1044,6 +1044,106 @@ class IntegratedSystem:
             "constants": checkpoint.get("constants", {}),
         }
 
+    # ─────────────────────────────────────────────
+    # T15 – Mehrstufige Imagination (Planning-as-Inference)
+    # ─────────────────────────────────────────────
+
+    @torch.no_grad()
+    def plan_action(self, obs_np: np.ndarray,
+                    horizon: int = 5, n_candidates: int = 32,
+                    discount: float = 0.95) -> dict:
+        """T15: Aktions-Planung durch Imagination im latenten Raum.
+
+        Erzeugt N Kandidaten-Aktionssequenzen, rollt jede über H Schritte
+        im World-Model (RSSM dynamics + reward_head) aus und wählt die
+        erste Aktion der Sequenz mit dem höchsten kumulierten Reward.
+
+        Args:
+            obs_np:       (H, W, 3) aktuelle Beobachtung
+            horizon:      Planungshorizont (Schritte voraus)
+            n_candidates: Anzahl Kandidaten-Sequenzen
+            discount:     Diskontfaktor für zukünftige Rewards
+        Returns:
+            dict mit:
+              "action":           (ACTION_DIM,) beste erste Aktion
+              "plan_reward_best": bester kumulierter Reward
+              "plan_reward_mean": mittlerer kumulierter Reward
+              "plan_reward_std":  Streuung der kumulierten Rewards
+              "plan_used":        True
+        """
+        N = n_candidates
+        H = horizon
+
+        # Bedingung: reward_head muss trainiert sein (genug Gemini-Daten)
+        if self.replay.gemini_count < EFE_GEMINI_RAMP:
+            return {"plan_used": False}
+
+        self.encoder.eval()
+        self.rssm.eval()
+        self.action_head.eval()
+        self.reward_head.eval()
+
+        # Aktuellen Zustand encodieren
+        x = torch.from_numpy(obs_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+        _, _, z_cur = self.encoder(x)         # (1, latent_dim)
+        goal_p = F.normalize(
+            self.goal_proj(self.current_goal_emb), dim=-1
+        )                                      # (1, latent_dim)
+
+        # Aktuellen RSSM-State lesen (NICHT verändern!)
+        h_cur = self.rssm._h                   # (1, d_model) oder None
+        if h_cur is None:
+            h_cur = torch.zeros(1, self.rssm.d_model, device=z_cur.device)
+
+        # Auf N Kandidaten expandieren
+        z = z_cur.expand(N, -1).contiguous()    # (N, latent_dim)
+        h = h_cur.expand(N, -1).contiguous()    # (N, d_model)
+        gp = goal_p.expand(N, -1).contiguous()  # (N, latent_dim)
+
+        # ActionHead-Vorschlag als Mittelwert + Sigma
+        mean_action, sigma = self.action_head(h)
+
+        # Akkumulierter Reward pro Kandidat
+        cum_reward = torch.zeros(N, device=z.device)
+        first_actions = torch.zeros(N, ACTION_DIM, device=z.device)
+
+        for t in range(H):
+            if t == 0:
+                # Erste Aktion: um ActionHead-Vorschlag herum sampeln
+                noise = torch.randn(N, ACTION_DIM, device=z.device)
+                actions = torch.clamp(mean_action + sigma * noise, -1.0, 1.0)
+                first_actions = actions.clone()
+            else:
+                # Folge-Aktionen: ActionHead auf imaginierten State anwenden
+                a_mean, a_sig = self.action_head(h)
+                noise = torch.randn(N, ACTION_DIM, device=z.device)
+                actions = torch.clamp(a_mean + 0.3 * a_sig * noise, -1.0, 1.0)
+
+            # Dynamics: z_{t+1} vorhersagen
+            pred_z_next = self.rssm.predict_next_z(h, actions)
+
+            # Hidden-State aktualisieren (GRU direkt, nicht self._h!)
+            gru_input = torch.cat([pred_z_next, actions, gp], dim=-1)
+            h = self.rssm.gru(gru_input, h)
+
+            # Reward bewerten
+            r = self.reward_head(
+                torch.cat([pred_z_next, actions], dim=-1)
+            ).squeeze(-1)
+            cum_reward += (discount ** t) * r
+
+        # Beste Sequenz auswählen
+        best_idx = cum_reward.argmax().item()
+        best_action = first_actions[best_idx].cpu().numpy()
+
+        return {
+            "action":           best_action,
+            "plan_reward_best": float(cum_reward[best_idx]),
+            "plan_reward_mean": float(cum_reward.mean()),
+            "plan_reward_std":  float(cum_reward.std()),
+            "plan_used":        True,
+        }
+
     def step(self, obs_np: np.ndarray, action_np: np.ndarray,
              next_obs_np: np.ndarray, scene: str):
         """
