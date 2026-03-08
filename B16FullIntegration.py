@@ -1240,9 +1240,19 @@ class IntegratedSystem:
         r_goal_norm = (r_goal_cos + 1.0) / 2.0   # [-1,1] → [0,1]
         r_sigma     = float(1.0 - pred_sigma.mean().item())
 
-        r_total = (0.3 * r_intr_norm + 0.4 * r_gemini +
-                   0.2 * r_goal_norm +
-                   0.1 * r_sigma)
+        # Aktions-Effizienz: Kamera-Pan ist billiger als Roboter-Drehung.
+        # Bestraft angular_z (Ganzkörper-Drehung), belohnt Pan-Nutzung.
+        # Motiviert den Agent, zuerst per Kamera-Schwenk zu suchen.
+        angular_cost = abs(float(action_np[1]))          # |angular_z| ∈ [0,1]
+        pan_usage    = abs(float(action_np[2]))           # |camera_pan| ∈ [0,1]
+        r_efficiency = float(np.clip(
+            1.0 - 0.5 * angular_cost + 0.3 * pan_usage, 0.0, 1.0
+        ))
+
+        r_total = (0.25 * r_intr_norm + 0.35 * r_gemini +
+                   0.2  * r_goal_norm +
+                   0.1  * r_sigma +
+                   0.1  * r_efficiency)
 
         # ── Training Step ───────────────────────────────────
         train_info = {}
@@ -1352,8 +1362,11 @@ class IntegratedSystem:
         h_seq = self.rssm.forward_sequence(z_seq, act_seq, goal_p)
 
         # Per-Step Losses (über L Steps gemittelt)
+        # Gewichte: [linear_x, angular_z, cam_pan, cam_tilt, arc, duration]
+        # Pan/Tilt von 0.05 auf 0.3 erhöht: Kamera-Steuerung ist real
+        # schneller/billiger als Roboter-Drehung → soll gelernt werden.
         action_weights = torch.tensor(
-            [1.0, 1.0, 0.05, 0.05, 0.3, 0.3], device=obs_flat.device
+            [1.0, 1.0, 0.3, 0.3, 0.3, 0.3], device=obs_flat.device
         )
         l_action = l_sigma = l_goal = l_next_z = l_pred_img = l_cam = 0.0
 
