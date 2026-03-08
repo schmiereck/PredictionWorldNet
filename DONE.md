@@ -266,6 +266,33 @@ Kamera-Orientierung, Ziel-Embedding und Dynamics.
 
 ---
 
+### T12 (neu) – Rekurrenter Weltzustand (RSSM-Kern, DreamerV3-Stil) ✅ ERLEDIGT
+
+**Lösung:**
+- [x] `RSSM` Klasse: GRUCell(518→256) ersetzt TemporalTransformer
+  - GRU-Input: cat(z_t, a_{t-1}, goal_proj) = 256+6+256 = 518-dim
+  - Hidden-State h_t persistiert über gesamte Episode (statt 4-Step-Fenster)
+  - `forward()`: Schritt-für-Schritt (Inferenz), aktualisiert self._h
+  - `forward_sequence()`: Sequenz-Forward (Training, Truncated BPTT)
+  - `predict_next_z()`: dynamics_head (identisch zur alten Version)
+- [x] `ReplayBuffer`: `done` Flag + `sample_sequences(batch_size, seq_len=8)`
+  - Episode-Grenzen markiert, nur zusammenhängende Sequenzen gesampelt
+  - Alter `sample()` für reward_head/scene_head unverändert
+- [x] `_train_step()`: Sequenz-basiert statt Einzel-Samples
+  - B*L Frames auf einmal encodiert, GRU unrollt über L=8 Steps
+  - Losses pro Step berechnet, über Sequenz gemittelt
+  - Truncated BPTT via PyTorch autograd
+- [x] `reset_hidden_state()`: GRU-State + prev_action zurücksetzen
+  - B19Orchestrator ruft bei Episode-Reset auf
+- [x] Checkpoint-Migration: dynamics_head Gewichte von Transformer übertragen, GRU startet frisch
+- [x] 862k Parameter (vs. Transformer ~600k): GRUCell(518,256) + dynamics_head
+
+**Parameteranzahl:** 861.952 (GRU: 595.200, dynamics_head: 266.752)
+
+**Dateien:** `B16FullIntegration.py`, `B19Orchestrator.py`
+
+---
+
 ### T17 (neu) – Offline-Vortraining der Dynamics ✅ ERLEDIGT
 
 **Lösung:**

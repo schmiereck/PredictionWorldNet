@@ -291,6 +291,102 @@ class TemporalTransformer(nn.Module):
         return self.dynamics_head(torch.cat([context, action], dim=-1))
 
 
+# ─────────────────────────────────────────────
+# T12: RSSM – Rekurrenter Weltzustand (DreamerV3-Stil)
+# ─────────────────────────────────────────────
+
+SEQ_LEN = 8   # Sequenzlänge für RSSM-Training (Truncated BPTT)
+
+class RSSM(nn.Module):
+    """T12: Rekurrenter Weltzustand (RSSM-Kern, DreamerV3-Stil).
+
+    Ersetzt den TemporalTransformer: GRU-Zelle statt Attention-Fenster.
+    Der Hidden-State h_t persistiert über die gesamte Episode und akkumuliert
+    Informationen über besuchte Orte, gesehene Objekte und Aktionsfolgen.
+
+    GRU-Input:  cat(z_t, a_{t-1}, goal_proj)  [latent + action + goal]
+    GRU-Output: h_t                            [d_model = 256-dim]
+    """
+
+    def __init__(self, latent_dim=LATENT_DIM, action_dim=ACTION_DIM,
+                 d_model=D_MODEL):
+        super().__init__()
+        self.d_model    = d_model
+        self.latent_dim = latent_dim
+        self.action_dim = action_dim
+
+        # GRU: z_t (256) + a_{t-1} (6) + goal (256) = 518
+        gru_input_dim = latent_dim + action_dim + latent_dim
+        self.gru = nn.GRUCell(gru_input_dim, d_model)
+
+        # dynamics_head: cat(h_t, a_t) → z_{t+1}  (identisch zur alten Version)
+        self.dynamics_head = nn.Sequential(
+            nn.Linear(d_model + action_dim, d_model * 2),
+            nn.ReLU(True),
+            nn.Linear(d_model * 2, latent_dim),
+        )
+
+        # Persistent hidden state (für Inferenz, Schritt-für-Schritt)
+        self._h = None
+
+    def reset_state(self):
+        """Hidden State zurücksetzen (Episode-Grenze)."""
+        self._h = None
+
+    def forward(self, z_cur, goal_proj, a_prev=None):
+        """
+        Ein Schritt: (z_t, goal_projected, a_{t-1}) → context (h_t).
+
+        Args:
+            z_cur:     (B, latent_dim)
+            goal_proj: (B, latent_dim) – bereits projiziertes Ziel-Embedding
+            a_prev:    (B, action_dim) – vorherige Aktion (None = zeros)
+        Returns:
+            h_t: (B, d_model) – neuer Hidden-State = context
+        """
+        B = z_cur.size(0)
+        if a_prev is None:
+            a_prev = torch.zeros(B, self.action_dim, device=z_cur.device)
+
+        x = torch.cat([z_cur, a_prev, goal_proj], dim=-1)
+
+        if self._h is None or self._h.shape[0] != B:
+            self._h = torch.zeros(B, self.d_model, device=z_cur.device)
+
+        self._h = self.gru(x, self._h)
+        return self._h
+
+    def forward_sequence(self, z_seq, act_seq, goal_proj, h_init=None):
+        """
+        Sequenz-Forward für Training (Truncated BPTT).
+
+        Args:
+            z_seq:     (B, L, latent_dim)
+            act_seq:   (B, L, action_dim)
+            goal_proj: (B, latent_dim) – gleich für alle Steps
+            h_init:    (B, d_model) oder None
+        Returns:
+            h_seq: (B, L, d_model)
+        """
+        B, L, _ = z_seq.shape
+        h = h_init if h_init is not None else \
+            torch.zeros(B, self.d_model, device=z_seq.device)
+
+        h_all = []
+        for t in range(L):
+            a_prev = torch.zeros(B, self.action_dim, device=z_seq.device) \
+                if t == 0 else act_seq[:, t - 1]
+            x = torch.cat([z_seq[:, t], a_prev, goal_proj], dim=-1)
+            h = self.gru(x, h)
+            h_all.append(h)
+
+        return torch.stack(h_all, dim=1)   # (B, L, d_model)
+
+    def predict_next_z(self, context, action):
+        """T10: Aktions-konditionierte Zustandsvorhersage P(z_{t+1} | h_t, a_t)."""
+        return self.dynamics_head(torch.cat([context, action], dim=-1))
+
+
 class ActionHead(nn.Module):
     def __init__(self, d_model=D_MODEL, action_dim=ACTION_DIM):
         super().__init__()
@@ -322,17 +418,67 @@ class ReplayBuffer:
         # Gemini ER Labels
         self.gemini_rewards  = np.full(max_size, np.nan, dtype=np.float32)
         self.gemini_labels   = [""] * max_size
+        # T12: Episode-Grenze (True = letzter Step vor Reset)
+        self.dones = np.zeros(max_size, dtype=bool)
 
     def add(self, obs, next_obs, action, reward, goal="",
-            gemini_reward=np.nan, gemini_label=""):
+            gemini_reward=np.nan, gemini_label="", done=False):
         i = self.ptr
         self.obs[i]     = obs;     self.next_obs[i]  = next_obs
         self.actions[i] = action;  self.rewards[i]   = reward
         self.goals[i]   = goal
         self.gemini_rewards[i] = gemini_reward
         self.gemini_labels[i]  = gemini_label
+        self.dones[i] = done
         self.ptr  = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
+
+    def sample_sequences(self, batch_size, seq_len=SEQ_LEN):
+        """T12: Zusammenhängende Sequenzen für RSSM-Training (BPTT).
+
+        Gibt Sequenzen zurück die keine Episode-Grenze enthalten.
+        Returns None wenn nicht genug sequenzielle Daten vorhanden.
+        """
+        if self.size < seq_len + 1:
+            return None
+
+        # Gültige Startindizes: keine done-Flag innerhalb der nächsten seq_len-1 Steps
+        n = self.size
+        valid = np.ones(n, dtype=bool)
+        for offset in range(seq_len - 1):
+            valid &= ~self.dones[(np.arange(n) + offset) % self.max_size]
+        # Nicht zu nahe am Schreibzeiger (Daten könnten überschrieben werden)
+        if self.size == self.max_size:
+            for offset in range(seq_len):
+                valid[(self.ptr - offset) % self.max_size] = False
+        valid_idx = np.where(valid[:max(n - seq_len + 1, 1)])[0]
+
+        if len(valid_idx) == 0:
+            return None
+
+        chosen = np.random.choice(
+            valid_idx, min(batch_size, len(valid_idx)),
+            replace=len(valid_idx) < batch_size
+        )
+        B = len(chosen)
+        obs_s   = np.zeros((B, seq_len, *OBS_SHAPE), dtype=np.uint8)
+        nobs_s  = np.zeros((B, seq_len, *OBS_SHAPE), dtype=np.uint8)
+        act_s   = np.zeros((B, seq_len, ACTION_DIM), dtype=np.float32)
+        goals   = []
+        for b, start in enumerate(chosen):
+            for t in range(seq_len):
+                idx = (start + t) % self.max_size
+                obs_s[b, t]  = self.obs[idx]
+                nobs_s[b, t] = self.next_obs[idx]
+                act_s[b, t]  = self.actions[idx]
+            goals.append(self.goals[start % self.max_size])
+
+        return {
+            "obs":      torch.from_numpy(obs_s).float() / 255.0,
+            "next_obs": torch.from_numpy(nobs_s).float() / 255.0,
+            "actions":  torch.from_numpy(act_s),
+            "goals":    goals,
+        }
 
     def sample(self, batch_size, require_gemini=False):
         if require_gemini:
@@ -585,7 +731,7 @@ class IntegratedSystem:
         # Modelle
         self.encoder     = Encoder()
         self.decoder     = Decoder()
-        self.transformer = TemporalTransformer()
+        self.rssm        = RSSM()   # T12: ersetzt TemporalTransformer
         self.action_head = ActionHead()
         self.goal_proj   = nn.Sequential(
             nn.Linear(512, 128),
@@ -611,9 +757,8 @@ class IntegratedSystem:
         # Buffer
         self.replay = ReplayBuffer(max_size=config["buffer_size"])
 
-        # Temporal History (vereinfacht, kein Ring-Buffer nötig für Demo)
-        self.z_hist = deque(maxlen=4)
-        self.a_hist = deque(maxlen=4)
+        # T12: vorherige Aktion für GRU-Input (ersetzt z_hist/a_hist)
+        self.prev_action = np.zeros(ACTION_DIM, dtype=np.float32)
 
         # Adaptive Controller
         self.adaptive = AdaptiveController(
@@ -629,7 +774,7 @@ class IntegratedSystem:
         all_params = (
                 list(self.encoder.parameters()) +
                 list(self.decoder.parameters()) +
-                list(self.transformer.parameters()) +
+                list(self.rssm.parameters()) +
                 list(self.action_head.parameters()) +
                 list(self.goal_proj.parameters()) +
                 list(self.reward_head.parameters()) +
@@ -695,6 +840,11 @@ class IntegratedSystem:
                 return idx
         return N_SCENE_CLASSES - 1  # "unknown"
 
+    def reset_hidden_state(self):
+        """T12: GRU-State zurücksetzen (Episode-Grenze)."""
+        self.rssm.reset_state()
+        self.prev_action = np.zeros(ACTION_DIM, dtype=np.float32)
+
     def set_goal(self, user_cmd: str):
         """Neues Ziel via Gemini Text-Interface (B13)."""
         result = self.gemini.translate_goal(user_cmd)
@@ -730,7 +880,7 @@ class IntegratedSystem:
             # Modell-Gewichte
             "encoder":      self.encoder.state_dict(),
             "decoder":      self.decoder.state_dict(),
-            "transformer":  self.transformer.state_dict(),
+            "rssm":         self.rssm.state_dict(),
             "action_head":  self.action_head.state_dict(),
             "goal_proj":    self.goal_proj.state_dict(),
             "reward_head":  self.reward_head.state_dict(),   # T14
@@ -798,23 +948,31 @@ class IntegratedSystem:
         self.decoder.load_state_dict(
             checkpoint["decoder"], strict=strict)
 
-        # Transformer/ActionHead/GoalProj nur laden wenn vorhanden
-        if "transformer" in checkpoint:
+        # T12: RSSM laden (oder Migration von altem Transformer-Checkpoint)
+        if "rssm" in checkpoint:
             try:
-                self.transformer.load_state_dict(
-                    checkpoint["transformer"], strict=strict)
+                self.rssm.load_state_dict(
+                    checkpoint["rssm"], strict=strict)
             except RuntimeError as e:
-                if strict:
-                    # T10-Migration: Alter Checkpoint hat next_z_head, neues Modell
-                    # hat dynamics_head. Partial-Load übernimmt alle anderen Gewichte.
-                    try:
-                        self.transformer.load_state_dict(
-                            checkpoint["transformer"], strict=False)
-                        print("    Transformer: T10-Migration (next_z_head -> dynamics_head, partial load)")
-                    except Exception as e2:
-                        print(f"    Transformer: übersprungen ({e2})")
-                else:
-                    print(f"    Transformer: übersprungen ({e})")
+                try:
+                    self.rssm.load_state_dict(
+                        checkpoint["rssm"], strict=False)
+                    print(f"    RSSM: partial load ({e})")
+                except Exception as e2:
+                    print(f"    RSSM: übersprungen ({e2})")
+        elif "transformer" in checkpoint:
+            # T12-Migration: dynamics_head Gewichte übertragen, GRU startet frisch
+            print("    T12-Migration: Transformer → RSSM (dynamics_head übertragen, GRU frisch)")
+            old_state = checkpoint["transformer"]
+            rssm_state = self.rssm.state_dict()
+            transferred = 0
+            for key in old_state:
+                if key.startswith("dynamics_head.") and key in rssm_state:
+                    if old_state[key].shape == rssm_state[key].shape:
+                        rssm_state[key] = old_state[key]
+                        transferred += 1
+            self.rssm.load_state_dict(rssm_state)
+            print(f"    dynamics_head: {transferred} Tensoren übertragen")
         if "action_head" in checkpoint:
             try:
                 self.action_head.load_state_dict(
@@ -895,7 +1053,7 @@ class IntegratedSystem:
 
         # ── Forward Pass (Inference) ────────────────────────
         self.encoder.eval(); self.decoder.eval()
-        self.transformer.eval(); self.action_head.eval()
+        self.rssm.eval(); self.action_head.eval()
         self.reward_head.eval(); self.scene_head.eval()
 
         with torch.no_grad():
@@ -907,20 +1065,12 @@ class IntegratedSystem:
             goal_emb = self.current_goal_emb
             goal_p   = F.normalize(self.goal_proj(goal_emb), dim=-1)
 
-            # Temporal History
-            self.z_hist.append(z.squeeze(0))
-            self.a_hist.append(torch.from_numpy(action_np).float())
+            # T12: RSSM – ein Schritt mit persistentem Hidden-State
+            a_prev  = torch.from_numpy(self.prev_action).float().unsqueeze(0)
+            context = self.rssm(z, goal_p, a_prev)
 
-            z_h = torch.stack(list(self.z_hist)).unsqueeze(0) \
-                if len(self.z_hist) >= 2 else None
-            a_h = torch.stack(list(self.a_hist)).unsqueeze(0) \
-                if len(self.a_hist) >= 2 else None
-
-            context = self.transformer(z, goal_emb, z_h, a_h)
-            # T10: Aktions-konditionierte Nächst-Frame-Vorhersage
-            # pred_z_next hängt jetzt explizit von action_np ab
             a_t         = torch.from_numpy(action_np).float().unsqueeze(0)
-            pred_z_next = self.transformer.predict_next_z(context, a_t)
+            pred_z_next = self.rssm.predict_next_z(context, a_t)
             pred_obs    = self.decoder(pred_z_next)
             pred_action, pred_sigma = self.action_head(context)
 
@@ -971,6 +1121,8 @@ class IntegratedSystem:
             gemini_reward=r_gemini if gem_called else np.nan,
             gemini_label=gem_label,
         )
+        # T12: vorherige Aktion für nächsten GRU-Schritt merken
+        self.prev_action = action_np.copy()
 
         # ── Gesamt-Reward (alle Komponenten auf [0,1] normalisiert) ──
         r_intr_norm = min(r_intr, 1.0)
@@ -1044,81 +1196,91 @@ class IntegratedSystem:
         }
 
     def _train_step(self) -> dict:
-        """Training auf einem Batch aus dem Replay Buffer."""
+        """T12: Sequenz-basiertes Training mit RSSM (Truncated BPTT)."""
         self.train_steps += 1
-        batch = self.replay.sample(self.cfg["batch_size"])
-        if batch is None:
+
+        # Sequenzen für RSSM-Training (BPTT über SEQ_LEN Steps)
+        seq_bs = max(self.cfg["batch_size"] // 2, 4)
+        seq_batch = self.replay.sample_sequences(seq_bs, SEQ_LEN)
+        if seq_batch is None:
             return {}
 
         self.encoder.train(); self.decoder.train()
-        self.transformer.train(); self.action_head.train()
+        self.rssm.train(); self.action_head.train()
         self.reward_head.train(); self.scene_head.train()
 
-        obs  = batch["obs"].permute(0,3,1,2)
-        nobs = batch["next_obs"].permute(0,3,1,2)
-        acts = batch["actions"]
-        g_rs = batch["gemini_rewards"]
+        B = len(seq_batch["goals"])
+        L = SEQ_LEN
 
-        mu, log_var, z = self.encoder(obs)
-        recon          = self.decoder(z)
+        # (B, L, H, W, 3) → (B*L, 3, H, W) für Encoder
+        obs_flat  = seq_batch["obs"].reshape(B * L, *OBS_SHAPE).permute(0, 3, 1, 2)
+        nobs_flat = seq_batch["next_obs"].reshape(B * L, *OBS_SHAPE).permute(0, 3, 1, 2)
+        act_seq   = seq_batch["actions"]   # (B, L, 6)
 
-        goal_embs = torch.cat([
-            self.clip.encode(g) for g in batch["goals"]
-        ], dim=0)
-        goal_p = F.normalize(self.goal_proj(goal_embs), dim=-1)
-        context = self.transformer(z, goal_embs)
-
-        pred_action, pred_sigma = self.action_head(context)
-
-        # Encoder für nächsten Frame (Ziel-Latent, kein Gradient zurück)
+        # Alle Frames auf einmal encodieren
+        mu_all, lv_all, z_all = self.encoder(obs_flat)
         with torch.no_grad():
-            _, _, z_next = self.encoder(nobs)
+            _, _, z_next_all = self.encoder(nobs_flat)
 
-        # T10: Aktions-konditionierte Vorhersage – acts ist die ausgeführte Aktion
-        pred_z_next   = self.transformer.predict_next_z(context, acts)
+        # Reshape → (B, L, latent_dim)
+        z_seq      = z_all.reshape(B, L, -1)
+        z_next_seq = z_next_all.reshape(B, L, -1)
 
-        # Nächst-Frame-Loss im BILDRAUM – Decoder lernt aus pred_z_next
-        # das nächste Bild zu erzeugen (echter Prediction-Loss, kein Recon)
-        pred_next_img = self.decoder(pred_z_next)
-        l_pred_img    = combined_recon_loss(pred_next_img, nobs, ssim_weight=0.3)
+        # Recon-Loss auf allen Frames
+        recon_all = self.decoder(z_all)
+        l_recon   = combined_recon_loss(recon_all, obs_flat, ssim_weight=0.3)
 
-        # Losses
-        l_recon  = combined_recon_loss(recon, obs, ssim_weight=0.3)
-        # Free-Bits KL: Dimensionen unter 0.5 nats erhalten keinen Penalty-Gradienten.
-        # Verhindert Posterior-Collapse: Encoder kann Dimensionen nutzen ohne
-        # durch KL-Druck auf Prior N(0,1) gezwungen zu werden.
-        kl_per_dim = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())  # (B, LATENT_DIM)
+        # Free-Bits KL
+        kl_per_dim = -0.5 * (1 + lv_all - mu_all.pow(2) - lv_all.exp())
         l_kl       = torch.clamp(kl_per_dim, min=0.5).mean()
-        # Action-Loss: Kamera-Dimensionen (2=pan, 3=tilt) stark downgewichtet,
-        # da strategie-dominierte Trainingsdaten sonst einen Links-Bias einlernen.
+
+        # Goal-Embeddings → projiziert
+        goal_embs = torch.cat([
+            self.clip.encode(g) for g in seq_batch["goals"]
+        ], dim=0)                                          # (B, 512)
+        goal_p = F.normalize(self.goal_proj(goal_embs), dim=-1)  # (B, latent_dim)
+
+        # T12: RSSM Forward über Sequenz → h_seq (B, L, d_model)
+        h_seq = self.rssm.forward_sequence(z_seq, act_seq, goal_p)
+
+        # Per-Step Losses (über L Steps gemittelt)
         action_weights = torch.tensor(
-            [1.0, 1.0, 0.05, 0.05, 0.3, 0.3],
-            dtype=torch.float32, device=pred_action.device
+            [1.0, 1.0, 0.05, 0.05, 0.3, 0.3], device=obs_flat.device
         )
-        l_action = (action_weights * (pred_action - acts).pow(2)).mean()
-        # Kamera-Zentrierung: NN-Output für pan/tilt zur Mitte regularisieren
-        l_cam_center = pred_action[:, 2:4].pow(2).mean()
-        # Latent-Prediction als leichtes Hilfsziel (Hauptsignal: l_pred_img)
-        l_next_z = F.mse_loss(pred_z_next, z_next.detach())
-        l_goal   = torch.clamp(1 - F.cosine_similarity(
-            F.normalize(context[:, :LATENT_DIM], dim=-1), goal_p, dim=-1
-        ), 0.0, 1.0).mean()
+        l_action = l_sigma = l_goal = l_next_z = l_pred_img = l_cam = 0.0
 
-        # Sigma-NLL: kalibrierte Unsicherheitsschätzung
-        with torch.no_grad():
-            action_err = (pred_action.detach() - acts).abs()
-        sigma_safe = torch.clamp(pred_sigma, min=1e-4)
-        l_sigma = torch.mean(torch.log(sigma_safe) + action_err / sigma_safe)
+        for t in range(L):
+            ctx = h_seq[:, t]            # (B, d_model)
+            act = act_seq[:, t]          # (B, 6)
 
-        # Gemini-gewichteter Recon-Loss
-        # Höherer Gemini-Reward → mehr Gewicht auf diesen Batch-Eintrag
-        gem_weight = (g_rs / (g_rs.sum() + 1e-8)).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-        l_gemini   = (gem_weight * (recon - obs).pow(2)).mean()
+            pa, ps = self.action_head(ctx)
+            l_action += (action_weights * (pa - act).pow(2)).mean()
+            l_cam    += pa[:, 2:4].pow(2).mean()
 
-        # T14: Reward-Prädiktor – eigene Stichprobe aus allen Gemini-Labels im Buffer.
-        # Eigene Stichprobe statt Batch-Maske: zuverlässige Dichte unabhängig von
-        # der Anzahl Gemini-Calls in diesem spezifischen Batch.
-        # z.detach(): kein Gradient zurück durch den Encoder.
+            with torch.no_grad():
+                ae = (pa.detach() - act).abs()
+            ss = torch.clamp(ps, min=1e-4)
+            l_sigma += torch.mean(torch.log(ss) + ae / ss)
+
+            l_goal += torch.clamp(1 - F.cosine_similarity(
+                F.normalize(ctx[:, :LATENT_DIM], dim=-1), goal_p, dim=-1
+            ), 0.0, 1.0).mean()
+
+            pzn = self.rssm.predict_next_z(ctx, act)
+            l_next_z += F.mse_loss(pzn, z_next_seq[:, t].detach())
+
+            # Pred-Image: nobs für Step t (Indices: t, L+t, 2L+t, ...)
+            pred_img_t = self.decoder(pzn)
+            nobs_t     = nobs_flat[range(t, B * L, L)]
+            l_pred_img += combined_recon_loss(pred_img_t, nobs_t, ssim_weight=0.3)
+
+        # Mittel über Sequenzlänge
+        l_action   /= L;  l_sigma    /= L;  l_goal   /= L
+        l_next_z   /= L;  l_pred_img /= L;  l_cam    /= L
+        l_cam_center = l_cam
+
+        # T14: Reward-Prädiktor – eigene Stichprobe aus Gemini-Labels im Buffer
+        dev = obs_flat.device
         gem_n = min(self.replay.gemini_count, 8)
         if gem_n >= 2:
             rb = self.replay.sample(gem_n, require_gemini=True)
@@ -1130,28 +1292,25 @@ class IntegratedSystem:
                 ).squeeze(-1)
                 l_reward = F.mse_loss(pred_r, rb["gemini_rewards"])
             else:
-                l_reward = torch.tensor(0.0, device=obs.device)
+                l_reward = torch.tensor(0.0, device=dev)
         else:
-            l_reward = torch.tensor(0.0, device=obs.device)
+            l_reward = torch.tensor(0.0, device=dev)
 
-        # T13: Szenen-Beschreibungs-Loss – schwache Supervision aus Gemini-Labels.
-        # Zufällige Stichprobe aus allen Gemini-gelabelten Einträgen (require_gemini=True).
-        # gemini_labels sind im gleichen sample() abrufbar.
-        # z.detach(): scene_head lernt aus dem Latent-Raum, verändert ihn nicht.
+        # T13: Szenen-Beschreibungs-Loss – schwache Supervision aus Gemini-Labels
         if gem_n >= 2:
             rb_s = self.replay.sample(gem_n, require_gemini=True)
             if rb_s is not None and any(rb_s["gemini_labels"]):
                 label_indices = torch.tensor(
                     [self._label_to_vocab_idx(lbl) for lbl in rb_s["gemini_labels"]],
-                    dtype=torch.long, device=obs.device
+                    dtype=torch.long, device=dev
                 )
                 with torch.no_grad():
                     _, _, z_s = self.encoder(rb_s["obs"].permute(0, 3, 1, 2))
                 l_scene = F.cross_entropy(self.scene_head(z_s.detach()), label_indices)
             else:
-                l_scene = torch.tensor(0.0, device=obs.device)
+                l_scene = torch.tensor(0.0, device=dev)
         else:
-            l_scene = torch.tensor(0.0, device=obs.device)
+            l_scene = torch.tensor(0.0, device=dev)
 
         fe = (1.0  * l_recon +
               0.5  * l_pred_img +       # Nächst-Frame-Prediction im Bildraum
@@ -1160,7 +1319,6 @@ class IntegratedSystem:
               0.2  * l_action +
               0.05 * l_sigma +
               0.1  * l_goal +
-              0.2  * l_gemini +
               0.05 * l_cam_center +
               0.1  * l_reward +         # T14: Reward-Prädiktor
               0.1  * l_scene)           # T13: Szenen-Beschreibung
@@ -1176,7 +1334,7 @@ class IntegratedSystem:
         grad_norms = {
             "encoder":     _grad_norm(self.encoder),
             "decoder":     _grad_norm(self.decoder),
-            "transformer": _grad_norm(self.transformer),
+            "rssm":        _grad_norm(self.rssm),
             "action_head": _grad_norm(self.action_head),
             "goal_proj":   _grad_norm(self.goal_proj),
             "reward_head": _grad_norm(self.reward_head),
@@ -1186,7 +1344,7 @@ class IntegratedSystem:
         torch.nn.utils.clip_grad_norm_(
             list(self.encoder.parameters()) +
             list(self.decoder.parameters()) +
-            list(self.transformer.parameters()) +
+            list(self.rssm.parameters()) +
             list(self.action_head.parameters()) +
             list(self.goal_proj.parameters()) +
             list(self.reward_head.parameters()) +
@@ -1199,7 +1357,7 @@ class IntegratedSystem:
         kl_val = float(l_kl.detach())
         # Mit Free-Bits ist l_kl >= 0.5 (Clamp-Floor). Warnung wenn unerwarteter Collapse.
         # Echter KL-Wert (ohne Free-Bits-Offset) für Monitoring:
-        kl_raw = float((-0.5 * (1 + log_var - mu.pow(2) - log_var.exp())).mean().detach())
+        kl_raw = float((-0.5 * (1 + lv_all - mu_all.pow(2) - lv_all.exp())).mean().detach())
         if kl_raw < 0.01 and self.train_steps > 100:
             print(f"  [WARN] KL-Collapse: KL_raw={kl_raw:.4f} nats (TrainStep {self.train_steps})")
 
@@ -1225,7 +1383,7 @@ class IntegratedSystem:
             round(self.optimizer.param_groups[0]["lr"], 8),
             round(self.beta, 6),
             round(gn["encoder"], 4), round(gn["decoder"], 4),
-            round(gn["transformer"], 4), round(gn["action_head"], 4),
+            round(gn["rssm"], 4), round(gn["action_head"], 4),
             round(gn["goal_proj"], 4), round(gn["reward_head"], 4),
             round(gn["scene_head"], 4),
         ])

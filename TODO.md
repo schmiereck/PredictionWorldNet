@@ -87,29 +87,7 @@ Dabei kommt `r_gemini_pred` aus einem Reward-Prädiktor (T14).
 
 ## 🟡 Priorität 2 – Weltzustand und Semantik
 
-### T12 – Rekurrenter Weltzustand (RSSM-Kern, DreamerV3-Stil)
-**Warum:** Der Transformer hat ein festes History-Fenster (4 Steps). Ein echter
-Weltzustand muss über beliebig lange Zeit stabil sein: "Ich habe vor 20 Schritten
-einen roten Würfel gesehen, der ist noch da."
-
-In Active Inference: Q(s_t | o_{0:t}, a_{0:t-1}) – der Posterior über vergangene
-**und** aktuelle Beobachtungen. Das erfordert einen kontinuierlichen Hidden State.
-
-**Lösung:** GRU als deterministischer Weltzustand neben dem stochastischen z:
-```
-h_t = GRU(h_{t-1},  z_t,  a_{t-1})    # deterministisch, persistent
-z_t ~ N(μ(h_t), σ(h_t))               # stochastisch, per Bild
-context = [h_t, goal_emb]              # ersetzt heutigen Transformer-Output
-```
-
-Multi-Step-Imagination wird möglich:
-```
-h_{t+k} = GRU(h_{t+k-1}, decoder(z_{t+k-1}), a_{t+k-1})  # kein echtes Bild nötig
-```
-
-**Voraussetzung:** T10 sollte stabil sein.
-**Dateien:** `B16FullIntegration.py` (neuer RSSM-Block, ersetzt TemporalTransformer)
-**Aufwand:** Hoch | **Nutzen:** Sehr Hoch
+### T12 – Rekurrenter Weltzustand (RSSM-Kern, DreamerV3-Stil) ✅ ERLEDIGT → DONE.md
 
 ---
 

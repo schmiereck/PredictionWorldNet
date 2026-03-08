@@ -665,12 +665,13 @@ class Orchestrator:
             elif mode == "miniworld":
                 self._scene = "miniworld"
                 self._goal  = self.ml_system.current_goal
-                # Trail bei Episode-Reset löschen (neue Objekt-Positionen)
+                # Episode-Reset: Trail löschen + RSSM Hidden-State zurücksetzen
                 if (isinstance(self.obs_source, MiniWorldObsSource)
-                        and getattr(self.obs_source, "episode_reset", False)
-                        and self.overhead is not None):
-                    self.overhead.clear_trail()
-                    print(f"  [Step {step:4d}] Episode-Reset → Trail gelöscht")
+                        and getattr(self.obs_source, "episode_reset", False)):
+                    self.ml_system.reset_hidden_state()
+                    if self.overhead is not None:
+                        self.overhead.clear_trail()
+                    print(f"  [Step {step:4d}] Episode-Reset → RSSM + Trail zurückgesetzt")
 
             # ── Aktion aus ML-System + Strategie ──────
             ml_result_pre = self.ml_system.step(
