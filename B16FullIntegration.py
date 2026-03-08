@@ -117,23 +117,31 @@ SCENE_LABEL_MAP = {
     "wand":       6, "wall":      6, "grau":     6,
     "nicht sichtbar": 6, "nicht erkennbar": 6, "nicht gefunden": 6,
     "unscharf":   6, "kein ziel": 6, "kein_ziel": 6,
+    # Hindernisse / Ausweichen (Gemini Ausweich-Hints)
+    "hindernis":  6, "blockiert": 6, "obstacle":  6, "blocked":   6,
+    "ausweichen": 6, "falsch":    6, "falsches_objekt": 6, "falsches objekt": 6,
+    "im weg":     6, "zu nah":    6, "kollision": 6, "steckt fest": 6,
 }
 N_SCENE_CLASSES = len(SCENE_VOCAB)
 
-SCENE_TYPES = ["red_box", "blue_ball", "green_door", "corridor", "corner"]
+SCENE_TYPES = ["red_box", "green_ball", "blue_ball", "orange_box", "yellow_box", "white_box"]
 SCENE_GOALS = {
     "red_box":    "find the red box",
+    "green_ball": "find the green ball",
     "blue_ball":  "find the blue ball",
-    "green_door": "navigate to the exit door",
-    "corridor":   "explore the corridor",
-    "corner":     "navigate to the corner",
+    "orange_box": "find the orange box",
+    "yellow_box": "find the yellow box",
+    "white_box":  "find the white box",
 }
+# Demo-Aktionen für run_demo() (B16 standalone):
+# [linear_x, angular_z, cam_pan, cam_tilt, arc_radius, duration]
 SCENE_ACTIONS = {
     "red_box":    [ 0.6,  0.0,  0.0,  0.1,  0.0, -0.5],
+    "green_ball": [ 0.5,  0.3,  0.0,  0.0,  0.0, -0.4],
     "blue_ball":  [ 0.4,  0.6, -0.3,  0.2,  0.0, -0.5],
-    "green_door": [ 0.8,  0.0,  0.0,  0.0,  0.0, -0.3],
-    "corridor":   [ 1.0,  0.0,  0.0,  0.0,  0.4, -0.4],
-    "corner":     [ 0.3,  0.8,  0.5,  0.0,  0.0, -0.6],
+    "orange_box": [ 0.6, -0.3,  0.0,  0.1,  0.0, -0.4],
+    "yellow_box": [ 0.5,  0.0,  0.2,  0.0,  0.0, -0.5],
+    "white_box":  [ 0.7,  0.0, -0.2,  0.0,  0.0, -0.3],
 }
 
 
@@ -566,20 +574,29 @@ class GeminiClients:
     TEXT_SYSTEM = """Übersetze Roboter-Befehle in kurze englische CLIP-Phrasen.
 Antworte NUR mit JSON: {"primary_goal": "...", "confidence": 0.0-1.0}"""
 
-    ROBOTICS_SYSTEM = """Du bewertest Kamerabilder eines niedrig gebauten Roboters (Hexapod).
+    ROBOTICS_SYSTEM = """Du bist der Navigations-Assistent eines niedrig gebauten Hexapod-Roboters.
+Der Roboter hat eine Kamera auf ca. 20cm Höhe und bleibt leicht an Objekten hängen.
+Deine Aufgabe: Den Roboter sicher zum Ziel lotsen UND an Hindernissen vorbeiführen.
+
 Antworte NUR mit JSON:
 {"reward": 0.0-1.0, "goal_progress": 0.0-1.0,
- "situation": "...", "recommendation": "...",
- "next_action_hint": "vorwärts/links/rechts/stopp/zurück/kamera/ausweichen_links/ausweichen_rechts",
+ "situation": "kurze Beschreibung was du siehst",
+ "recommendation": "was der Roboter tun soll",
+ "next_action_hint": "EINES von: vorwärts/links/rechts/stopp/zurück/kamera/ausweichen_links/ausweichen_rechts",
  "training_label": "kurzes Label für diesen Zustand"}
 
-Wichtige Regeln:
-- Wenn ein Objekt sehr nah ist und den Weg blockiert (großflächig im Bild),
-  aber NICHT das Ziel ist: reward=0.1, next_action_hint="ausweichen_links" oder
-  "ausweichen_rechts" (je nachdem wo mehr Platz ist).
-- Wenn das Ziel-Objekt nah und zentriert ist: reward=0.9-1.0, hint="stopp".
-- Wenn gar kein Objekt sichtbar ist (nur Wand/Boden): reward=0.2, hint="links" oder "rechts".
-- Nutze "kamera" wenn das Ziel am Bildrand ist (Kameraschwenk statt Drehung)."""
+Regeln für next_action_hint:
+- "ausweichen_links" oder "ausweichen_rechts": Ein Objekt das NICHT das Ziel ist,
+  ist sehr nah oder blockiert den Weg (nimmt >30% des Bildes ein). Der Roboter muss
+  daran vorbei. Wähle die Seite mit mehr freiem Platz. reward=0.1, training_label="hindernis".
+- "zurück": Der Roboter steckt fest oder ist zu dicht an einem Hindernis. reward=0.05.
+- "stopp": Das Ziel-Objekt ist nah und zentriert. reward=0.9-1.0.
+- "vorwärts": Das Ziel ist sichtbar und der Weg ist frei.
+- "links"/"rechts": Das Ziel ist nicht sichtbar, der Roboter soll sich drehen.
+- "kamera": Das Ziel ist am Bildrand — Kameraschwenk reicht, keine Drehung nötig.
+
+Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein großes,
+nahes Objekt siehst das NICHT das Ziel ist, sage IMMER "ausweichen", nicht "vorwärts"."""
 
     def __init__(self, api_key: str = None):
         self.mode = "mock"
