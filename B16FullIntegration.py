@@ -1241,14 +1241,10 @@ class IntegratedSystem:
         r_goal_norm = (r_goal_cos + 1.0) / 2.0   # [-1,1] → [0,1]
         r_sigma     = float(1.0 - pred_sigma.mean().item())
 
-        # Aktions-Effizienz: Kamera-Pan ist billiger als Roboter-Drehung.
-        # Bestraft angular_z (Ganzkörper-Drehung), belohnt Pan-Nutzung.
-        # Motiviert den Agent, zuerst per Kamera-Schwenk zu suchen.
+        # Aktions-Effizienz: Ganzkörper-Drehung ist teuer (Hexapod).
+        # Nur Bestrafung, kein Pan-Bonus (sonst lernt Agent dauerhaft geschwenkten Pan).
         angular_cost = abs(float(action_np[1]))          # |angular_z| ∈ [0,1]
-        pan_usage    = abs(float(action_np[2]))           # |camera_pan| ∈ [0,1]
-        r_efficiency = float(np.clip(
-            1.0 - 0.5 * angular_cost + 0.3 * pan_usage, 0.0, 1.0
-        ))
+        r_efficiency = float(1.0 - 0.5 * angular_cost)
 
         r_total = (0.25 * r_intr_norm + 0.35 * r_gemini +
                    0.2  * r_goal_norm +
