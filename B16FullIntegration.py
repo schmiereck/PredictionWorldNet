@@ -103,13 +103,19 @@ SCENE_VOCAB = [
 ]
 # Schlüsselwörter (Kleinschreibung) → Vokabular-Index
 SCENE_LABEL_MAP = {
-    "red_box":    0, "red box":   0, "rote":   0, "roter":  0, "red":     0,
-    "yellow_box": 1, "yellow":    1, "gelbe":  1, "gelber": 1,
+    # Objekte (Deutsch + Englisch)
+    "red_box":    0, "red box":   0, "rote":   0, "roter":  0, "rotes":  0, "red":    0,
+    "yellow_box": 1, "yellow":    1, "gelbe":  1, "gelber": 1, "gelbes": 1,
     "orange_box": 2, "orange":    2,
-    "white_box":  3, "white":     3, "weiss":  3, "weiße":  3, "weis":    3,
-    "green_ball": 4, "green":     4, "grüne":  4, "grüner": 4, "grün":    4,
-    "blue_ball":  5, "blue":      5, "blaue":  5, "blauer": 5, "blau":    5,
+    "white_box":  3, "white":     3, "weiss":  3, "weiße":  3, "weißer": 3, "weis":   3,
+    "green_ball": 4, "green":     4, "grüne":  4, "grüner": 4, "grün":   4,
+    "blue_ball":  5, "blue":      5, "blaue":  5, "blauer": 5, "blau":   5,
+    # Exploration / kein Ziel sichtbar (häufige Gemini-Labels)
     "exploring":  6, "erkunden":  6, "korridor": 6, "corridor": 6, "ecke": 6,
+    "suche":      6, "such":      6, "leer":     6, "empty":    6,
+    "wand":       6, "wall":      6, "grau":     6,
+    "nicht sichtbar": 6, "nicht erkennbar": 6, "nicht gefunden": 6,
+    "unscharf":   6, "kein ziel": 6, "kein_ziel": 6,
 }
 N_SCENE_CLASSES = len(SCENE_VOCAB)
 
@@ -633,7 +639,7 @@ class IntegratedSystem:
             all_params, lr=config["lr"], weight_decay=1e-3
         )
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=80, min_lr=1e-5
+            self.optimizer, mode='min', factor=0.5, patience=80, min_lr=1e-4
         )
         self.beta = 0.0
 

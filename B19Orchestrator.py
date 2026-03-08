@@ -745,23 +745,33 @@ class Orchestrator:
                 else:
                     gemini_image = self.robot.get_high_res().image
 
-                # Persistiert bis zum nächsten Gemini-Call
-                self._last_gemini_image = gemini_image
+                # Wand-Filter: einheitliche graue Fläche nicht an Gemini senden
+                # (Gemini sagt "unscharf", aber es ist eine Wand → nutzloser API-Call)
+                if gemini_image is not None:
+                    _img_var = float(np.var(gemini_image.astype(np.float32)))
+                    if _img_var < 200.0:
+                        gemini_image = None
+                        print(f"  [Step {step:4d}] Gemini übersprungen (Wand, var={_img_var:.0f})")
 
-                ass = self.gemini.assess_image(
-                    gemini_image,
-                    self.ml_system.current_goal,
-                    {"linear_x":   float(act_arr[0]),
-                     "angular_z":  float(act_arr[1]),
-                     "camera_pan": float((act_arr[2]+1)/2*180-90),
-                     "camera_tilt":float((act_arr[3]+1)/2*90-45)},
-                )
-                # Vollständige Ausgabe
-                print(f"  [Step {step:4d}] Gemini ER: r={ass['reward']:.3f}")
-                print(f"             Situation:  {ass.get('situation','')}")
-                print(f"             Empfehlung: {ass.get('recommendation','')}")
-                gemini_event = ass
-                self._pending_gemini_event = ass   # für nächstes Dashboard-Update merken
+                if gemini_image is None:
+                    gemini_event = None
+                else:
+                    # Persistiert bis zum nächsten Gemini-Call
+                    self._last_gemini_image = gemini_image
+
+                    ass = self.gemini.assess_image(
+                        gemini_image,
+                        self.ml_system.current_goal,
+                        {"linear_x":   float(act_arr[0]),
+                         "angular_z":  float(act_arr[1]),
+                         "camera_pan": float((act_arr[2]+1)/2*180-90),
+                         "camera_tilt":float((act_arr[3]+1)/2*90-45)},
+                    )
+                    print(f"  [Step {step:4d}] Gemini ER: r={ass['reward']:.3f}")
+                    print(f"             Situation:  {ass.get('situation','')}")
+                    print(f"             Empfehlung: {ass.get('recommendation','')}")
+                    gemini_event = ass
+                    self._pending_gemini_event = ass
             else:
                 gemini_event = None
 
