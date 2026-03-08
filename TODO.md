@@ -16,7 +16,7 @@ Alle Architektur-Entscheidungen folgen dem Active Inference Rahmen:
 
 ```
 Generatives Modell:    P(o_t | s_t)          ← Decoder (rekonstruiert/prediziert Bild)
-                       P(s_t | s_{t-1}, a_t) ← Transitions-Modell (fehlt noch: T10, T12)
+                       P(s_t | s_{t-1}, a_t) ← Transitions-Modell (T10 + T12 ✅)
                        P(a_t)                 ← Prior auf Aktionen (via Gemini-Präferenzen)
 
 Erkennungsmodell:      Q(s_t | o_t)           ← Encoder (VAE posterior)
@@ -145,7 +145,7 @@ T18  FE-Dashboard                            ← Begleitend zu T11/T15
 | Sigma-Unsicherheit      | Epistemischer EFE-Term (Proxy)     | ✅ vorhanden |      |
 | Transition-Modell       | P(s_{t+1}\|s_t, **a_t**)          | ✅ T10       |      |
 | EFE-Aktionswahl         | Aktionen minimieren EFE            | ✅ T11       |      |
-| GRU-Weltzustand         | Q(s_t\|o_{0:t}, a_{0:t}) (RSSM)   | ❌ fehlt     | T12  |
+| GRU-Weltzustand         | Q(s_t\|o_{0:t}, a_{0:t}) (RSSM)   | ✅ T12       |      |
 | Semantik-Kopf           | P(label\|s) – Szene beschreiben   | ✅ T13       |      |
 | Reward-Prädiktor        | Pragmatischer Prior P(o\|bevorzugt)| ✅ T14       |      |
 | Imagination             | Planning-as-Inference              | ✅ T15       |      |
