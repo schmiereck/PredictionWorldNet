@@ -337,6 +337,45 @@ T05 ──→ T11  (Beta-Annealing vor Skip-Connections)
 T06 ──→ T11  (Perceptual Loss vor Skip-Connections)
 ```
 
+---
+
+### T11 – Expected Free Energy (EFE) als Aktions-Auswahlprinzip ✅ ERLEDIGT
+
+**Problem:** Der ActionHead lernte via reiner Imitation (`l_action = MSE` zu ausgeführten
+Aktionen). In Active Inference soll der Agent Aktionen wählen die **EFE minimieren**:
+epistemisch (Unsicherheit reduzieren) und pragmatisch (Ziel erreichen).
+
+**Lösung:** Adaptiver Blend zwischen Imitation und EFE im `_train_step()`:
+
+```python
+# T11: EFE-Blend — adaptiv basierend auf Gemini-Daten im Buffer
+efe_blend = EFE_BLEND_MAX * min(gemini_count / EFE_GEMINI_RAMP, 1.0)
+
+# Pro Zeitschritt t:
+l_imitation_t = (action_weights * (pa - act).pow(2)).mean()  # Stabilisierung
+r_pred_efe = reward_head(cat([z.detach(), pa], dim=-1))      # Pragmatischer EFE
+l_efe_t = -r_pred_efe.mean()                                 # Maximiere Reward
+
+l_action += efe_blend * l_efe_t + (1 - efe_blend) * l_imitation_t
+```
+
+**Konstanten:**
+- `EFE_BLEND_MAX = 0.5` — maximaler EFE-Anteil (Rest = Imitation)
+- `EFE_GEMINI_RAMP = 50` — ab 50 Gemini-Samples voller Blend
+
+**Design-Entscheidungen:**
+- z ist detached → reward_head bekommt keinen Fehl-Gradienten über z
+- Gradient fließt: l_efe → r_pred → pa → ActionHead (korrekt!)
+- Imitation bleibt als Stabilisierungs-Term (Bootstrap + Regularisierung)
+- Epistemischer Term separat über existierenden l_sigma (NLL-Kalibrierung)
+- Blend ramp-up verhindert EFE-Rauschen bevor reward_head trainiert ist
+
+**Logging:** `efe_blend` Spalte in train-CSV; `grad_rssm` statt `grad_tr`.
+
+**Dateien:** `B16FullIntegration.py` (Zeilen ~298, ~1260-1280, ~1400)
+
+---
+
 ## Empfohlene Reihenfolge
 
 1. **T01** – Reward-Normalisierung (schneller Fix, großer Effekt)

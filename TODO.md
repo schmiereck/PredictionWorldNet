@@ -61,27 +61,10 @@ Headless-Testmodus + CSV-Logging als Nebenprodukt.
 
 ---
 
-### T11 – Expected Free Energy (EFE) als Aktions-Auswahlprinzip
-**Warum:** Derzeit lernt der ActionHead via Imitation (l_action = MSE zu ausgeführten
-Aktionen). In echtem Active Inference wählt der Agent Aktionen die die EFE minimieren:
+### T11 – Expected Free Energy (EFE) als Aktions-Auswahlprinzip ✅ ERLEDIGT → DONE.md
 
-```
-EFE(a_t) = Epistemisch  +  Pragmatisch
-           = E[H[Q(z|o)]] - E[log P(o|bevorzugt)]
-           ≈ −sigma_pred  +  (−r_gemini)
-```
-
-**Lösung:** Statt l_action als Imitation-Loss: l_efe als Aktions-Verlust formulieren.
-Der ActionHead minimiert direkt:
-```
-l_efe = −α * r_gemini_pred  +  β * sigma.mean()
-```
-Dabei kommt `r_gemini_pred` aus einem Reward-Prädiktor (T14).
-
-**Achtung:** Dies ist ein größerer konzeptueller Schritt. Erst nach T10 und T14 angehen.
-
-**Dateien:** `B16FullIntegration.py` (ActionHead, _train_step)
-**Aufwand:** Mittel | **Nutzen:** Sehr Hoch (zentral für Active Inference)
+EFE-basierte Aktionswahl implementiert: Adaptiver Blend zwischen Imitation und EFE.
+`reward_head(z, predicted_action)` liefert pragmatischen EFE-Term.
 
 ---
 
@@ -173,7 +156,7 @@ T18  FE-Dashboard                            ← Begleitend zu T11/T15
 | Gemini-Reward           | Pragmatischer EFE-Term             | ✅ vorhanden |      |
 | Sigma-Unsicherheit      | Epistemischer EFE-Term (Proxy)     | ✅ vorhanden |      |
 | Transition-Modell       | P(s_{t+1}\|s_t, **a_t**)          | ✅ T10       |      |
-| EFE-Aktionswahl         | Aktionen minimieren EFE            | ❌ fehlt     | T11  |
+| EFE-Aktionswahl         | Aktionen minimieren EFE            | ✅ T11       |      |
 | GRU-Weltzustand         | Q(s_t\|o_{0:t}, a_{0:t}) (RSSM)   | ❌ fehlt     | T12  |
 | Semantik-Kopf           | P(label\|s) – Szene beschreiben   | ✅ T13       |      |
 | Reward-Prädiktor        | Pragmatischer Prior P(o\|bevorzugt)| ✅ T14       |      |

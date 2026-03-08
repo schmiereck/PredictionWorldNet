@@ -297,6 +297,14 @@ class TemporalTransformer(nn.Module):
 
 SEQ_LEN = 8   # Sequenzlänge für RSSM-Training (Truncated BPTT)
 
+# T11: EFE (Expected Free Energy) als Aktions-Auswahlprinzip
+# Blend zwischen Imitations-Loss und EFE-Loss für den ActionHead.
+# EFE_BLEND rampt adaptiv hoch mit der Anzahl verfügbarer Gemini-Samples:
+#   efe_blend = EFE_BLEND_MAX * min(gemini_count / EFE_GEMINI_RAMP, 1.0)
+# → Kein EFE ohne trainierte reward_head (pragmatischer Term wäre Rauschen).
+EFE_BLEND_MAX   = 0.5    # Maximaler EFE-Anteil (Rest = Imitation)
+EFE_GEMINI_RAMP = 50     # Ab 50 Gemini-Samples voller EFE-Blend
+
 class RSSM(nn.Module):
     """T12: Rekurrenter Weltzustand (RSSM-Kern, DreamerV3-Stil).
 
@@ -823,8 +831,8 @@ class IntegratedSystem:
         self._csv_train.writerow([
             "train_step", "total_step", "fe", "recon", "pred_img",
             "kl", "kl_raw", "action", "l_sigma", "l_reward", "l_scene",
-            "goal_loss", "cam_center", "lr", "beta",
-            "grad_enc", "grad_dec", "grad_tr", "grad_ah", "grad_gp", "grad_rh", "grad_sh",
+            "goal_loss", "cam_center", "efe_blend", "lr", "beta",
+            "grad_enc", "grad_dec", "grad_rssm", "grad_ah", "grad_gp", "grad_rh", "grad_sh",
         ])
         self._csv_gemini.writerow([
             "total_step", "reward", "goal_progress", "situation",
@@ -1249,12 +1257,28 @@ class IntegratedSystem:
         )
         l_action = l_sigma = l_goal = l_next_z = l_pred_img = l_cam = 0.0
 
+        # T11: EFE-Blend — adaptiv basierend auf Gemini-Daten im Buffer
+        gem_count = self.replay.gemini_count
+        efe_blend = EFE_BLEND_MAX * min(gem_count / EFE_GEMINI_RAMP, 1.0)
+
         for t in range(L):
             ctx = h_seq[:, t]            # (B, d_model)
             act = act_seq[:, t]          # (B, 6)
 
             pa, ps = self.action_head(ctx)
-            l_action += (action_weights * (pa - act).pow(2)).mean()
+
+            # T11: Imitation + EFE Blend
+            # Imitation: MSE zu ausgeführten Aktionen (Stabilisierung)
+            l_imitation_t = (action_weights * (pa - act).pow(2)).mean()
+            # EFE pragmatisch: reward_head bewertet die vorhergesagte Aktion
+            # Gradient fließt: l_efe → reward_head → pa → ActionHead
+            # z ist detached → reward_head bekommt keinen Fehl-Gradienten über z
+            r_pred_efe = self.reward_head(
+                torch.cat([z_seq[:, t].detach(), pa], dim=-1)
+            ).squeeze(-1)
+            l_efe_t = -r_pred_efe.mean()  # maximiere vorhergesagten Reward
+
+            l_action += efe_blend * l_efe_t + (1.0 - efe_blend) * l_imitation_t
             l_cam    += pa[:, 2:4].pow(2).mean()
 
             with torch.no_grad():
@@ -1380,6 +1404,7 @@ class IntegratedSystem:
             round(kl_val, 6), round(kl_raw, 6), round(act_val, 6),
             round(sigma_val, 6), round(reward_val, 6), round(scene_val, 6),
             round(goal_val, 6), round(cam_val, 6),
+            round(efe_blend, 4),
             round(self.optimizer.param_groups[0]["lr"], 8),
             round(self.beta, 6),
             round(gn["encoder"], 4), round(gn["decoder"], 4),
@@ -1397,7 +1422,7 @@ class IntegratedSystem:
                 f"  [T{self.train_steps:5d}] "
                 f"FE={fe_val:.4f}  recon={recon_val:.4f}  pred={pred_val:.4f}  "
                 f"kl_raw={kl_raw:.4f}  reward={reward_val:.4f}  scene={scene_val:.4f}  "
-                f"lr={self.optimizer.param_groups[0]['lr']:.2e}"
+                f"efe={efe_blend:.2f}  lr={self.optimizer.param_groups[0]['lr']:.2e}"
             )
 
         return {
@@ -1471,11 +1496,11 @@ def run_demo():
     total_params = (
             sum(p.numel() for p in system.encoder.parameters()) +
             sum(p.numel() for p in system.decoder.parameters()) +
-            sum(p.numel() for p in system.transformer.parameters()) +
+            sum(p.numel() for p in system.rssm.parameters()) +
             sum(p.numel() for p in system.action_head.parameters())
     )
     # Dynamics-Head Parameter separat anzeigen (T10)
-    dyn_params = sum(p.numel() for p in system.transformer.dynamics_head.parameters())
+    dyn_params = sum(p.numel() for p in system.rssm.dynamics_head.parameters())
     print(f"Gesamt-Parameter: {total_params:,}  (davon dynamics_head: {dyn_params:,})")
     print(f"Steps: {config['n_steps']}")
     print(f"Logs:  logs/steps_{system._log_ts}.csv")
