@@ -566,12 +566,20 @@ class GeminiClients:
     TEXT_SYSTEM = """Übersetze Roboter-Befehle in kurze englische CLIP-Phrasen.
 Antworte NUR mit JSON: {"primary_goal": "...", "confidence": 0.0-1.0}"""
 
-    ROBOTICS_SYSTEM = """Du bewertest Kamerabilder eines Roboters.
+    ROBOTICS_SYSTEM = """Du bewertest Kamerabilder eines niedrig gebauten Roboters (Hexapod).
 Antworte NUR mit JSON:
 {"reward": 0.0-1.0, "goal_progress": 0.0-1.0,
  "situation": "...", "recommendation": "...",
- "next_action_hint": "vorwärts/links/rechts/stopp/kamera",
- "training_label": "kurzes Label für diesen Zustand"}"""
+ "next_action_hint": "vorwärts/links/rechts/stopp/zurück/kamera/ausweichen_links/ausweichen_rechts",
+ "training_label": "kurzes Label für diesen Zustand"}
+
+Wichtige Regeln:
+- Wenn ein Objekt sehr nah ist und den Weg blockiert (großflächig im Bild),
+  aber NICHT das Ziel ist: reward=0.1, next_action_hint="ausweichen_links" oder
+  "ausweichen_rechts" (je nachdem wo mehr Platz ist).
+- Wenn das Ziel-Objekt nah und zentriert ist: reward=0.9-1.0, hint="stopp".
+- Wenn gar kein Objekt sichtbar ist (nur Wand/Boden): reward=0.2, hint="links" oder "rechts".
+- Nutze "kamera" wenn das Ziel am Bildrand ist (Kameraschwenk statt Drehung)."""
 
     def __init__(self, api_key: str = None):
         self.mode = "mock"

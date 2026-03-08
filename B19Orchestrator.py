@@ -436,6 +436,11 @@ class Orchestrator:
         # Setup-Status: verhindert Checkpoint-Schreiben bei vorzeitigem Schließen
         self._setup_complete = False
 
+        # Gemini Ausweich-Override: wenn Gemini "ausweichen_links/rechts" sagt,
+        # wird die Aktion für N Steps überschrieben.
+        self._gemini_override_action = None   # np.ndarray oder None
+        self._gemini_override_steps  = 0      # verbleibende Steps
+
     def setup(self):
         """Erstellt alle Komponenten."""
         print("B19 – Orchestrator Setup")
@@ -685,7 +690,15 @@ class Orchestrator:
                 train=False,  # Nur Vorhersage, kein Training
             ) if False else None  # Vorhersage kommt nach dem Step
 
-            if mode == "miniworld" and self.strategy_exec is not None:
+            if mode == "miniworld" and self._gemini_override_steps > 0:
+                # Gemini-Ausweich-Override hat Priorität über alles
+                act_arr = self._gemini_override_action.copy()
+                self._gemini_override_steps -= 1
+                if self._gemini_override_steps == 0:
+                    self._gemini_override_action = None
+                    print(f"  [Step {step:4d}] Gemini Ausweich-Override beendet")
+
+            elif mode == "miniworld" and self.strategy_exec is not None:
                 # Strategie-Aktion berechnen
                 obs_info = {
                     "image_nn": obs.image,
@@ -789,6 +802,25 @@ class Orchestrator:
                     print(f"             Empfehlung: {ass.get('recommendation','')}")
                     gemini_event = ass
                     self._pending_gemini_event = ass
+
+                    # Gemini Ausweich-Override prüfen
+                    hint = ass.get("next_action_hint", "").lower()
+                    if "ausweichen_links" in hint:
+                        # Seitwärts + leicht vorwärts + nach links drehen
+                        self._gemini_override_action = np.array(
+                            [0.3, 0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 5
+                        print(f"             → Ausweich-Override: LINKS ({self._gemini_override_steps} Steps)")
+                    elif "ausweichen_rechts" in hint:
+                        self._gemini_override_action = np.array(
+                            [0.3, -0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 5
+                        print(f"             → Ausweich-Override: RECHTS ({self._gemini_override_steps} Steps)")
+                    elif "zurück" in hint:
+                        self._gemini_override_action = np.array(
+                            [-0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 3
+                        print(f"             → Ausweich-Override: ZURÜCK ({self._gemini_override_steps} Steps)")
             else:
                 gemini_event = None
 
