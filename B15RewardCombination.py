@@ -90,6 +90,9 @@ Antworte NUR mit validem JSON:
 WICHTIGES VERHALTEN BEIM NÄHERKOMMEN:
 Da Objekte niedriger sind als die Kamera, verschwinden sie am unteren Bildrand, wenn der Roboter sehr nah kommt!
 Wenn ein Zielobjekt nah ist, MUSS der Roboter die Kamera nach unten neigen ("camera_down"), um es nicht aus den Augen zu verlieren.
+Achte besonders auf Objekte am unteren Bildrand die oft nur teilweise sichtbar sind. 
+Gib dann die Empfehlung ein Stück rückwärts zu fahren und die Kamera zu neigen, damit das Ziel wieder vollständig sichtbar wird.
+Der Boter muss dann das Hindernis umfahren, auch wenn dabei das Ziel aus dem Blickfeld gerät.
 
 Bewertungsregeln:
 - reward=1.0: Ziel klar sichtbar, zentriert und nah (Erfolg).
@@ -114,7 +117,8 @@ class GeminiRoboticsInterface:
     Output: reward, situation, recommendation, next_action_hint
     """
 
-    ROBOTICS_MODEL = "gemini-2.5-flash"
+    #ROBOTICS_MODEL = "gemini-2.5-flash"
+    ROBOTICS_MODEL = "gemini-robotics-er-1.5-preview"
     # Zukünftig: "models/gemini-robotics-er-1.5-preview"
     # Sobald das Modell öffentlich verfügbar ist, hier ersetzen
 
@@ -162,7 +166,7 @@ class GeminiRoboticsInterface:
 
         Args:
             image_np:    (H, W, 3) uint8
-            goal_text:   Ziel-Text (aus B13/Gemini 2.5 Flash)
+            goal_text:   Ziel-Text (aus B13/Gemini)
             last_action: dict mit linear_x, angular_z, camera_pan, camera_tilt
 
         Returns:
