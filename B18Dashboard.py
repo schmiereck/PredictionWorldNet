@@ -862,6 +862,19 @@ def draw_scene(scene_type: str, noise: float = 0.0) -> np.ndarray:
         img[y,2:14] = [100,100,120]
     if scene_type == "red_box":
         img[8:12,5:9]=[200,40,40]; img[6:9,6:10]=[160,30,30]
+    elif scene_type == "yellow_box":
+        img[8:12,5:9]=[220,220,30]; img[6:9,6:10]=[180,180,20]; img[6:12,9]=[140,140,10]
+    elif scene_type == "orange_box":
+        img[8:12,5:9]=[220,130,20]; img[6:9,6:10]=[180,100,15]; img[6:12,9]=[140,80,10]
+    elif scene_type == "white_box":
+        img[8:12,5:9]=[230,230,230]; img[6:9,6:10]=[200,200,200]; img[6:12,9]=[170,170,170]
+    elif scene_type == "green_ball":
+        for y in range(16):
+            for x in range(16):
+                d=np.sqrt((x-8)**2+(y-10)**2)
+                if d<3.2:
+                    g=int(255*max(0,1-d/3.2))
+                    img[y,x]=[0,min(255,g),0]
     elif scene_type == "blue_ball":
         for y in range(16):
             for x in range(16):
@@ -869,12 +882,6 @@ def draw_scene(scene_type: str, noise: float = 0.0) -> np.ndarray:
                 if d<3.2:
                     b=int(255*max(0,1-d/3.2))
                     img[y,x]=[0,b//3,min(255,b)]
-    elif scene_type == "green_door":
-        img[3:8,6:10]=[30,140,50]; img[5,9]=[200,180,0]
-    elif scene_type == "corridor":
-        img[2:10,2:14]=[90,90,110]; img[4:6,7:9]=[220,220,180]
-    elif scene_type == "corner":
-        img[2:14,2:8]=[95,90,115]; img[2:14,8:14]=[110,105,130]
     img[10,2:14]=[50,50,50]
     if noise > 0:
         img = np.clip(img.astype(int) +
@@ -883,38 +890,43 @@ def draw_scene(scene_type: str, noise: float = 0.0) -> np.ndarray:
     return img
 
 
-SCENE_TYPES = ["red_box","blue_ball","green_door","corridor","corner"]
+SCENE_TYPES = ["red_box", "green_ball", "blue_ball", "orange_box", "yellow_box", "white_box"]
 SCENE_GOALS = {
     "red_box":    "find the red box",
+    "green_ball": "find the green ball",
     "blue_ball":  "find the blue ball",
-    "green_door": "navigate to the exit door",
-    "corridor":   "explore the corridor",
-    "corner":     "navigate to the corner",
+    "orange_box": "find the orange box",
+    "yellow_box": "find the yellow box",
+    "white_box":  "find the white box",
 }
 SCENE_ACTIONS = {
     "red_box":    [ 0.6,  0.0,  0.0,  0.1,  0.0, -0.5],
+    "green_ball": [ 0.5,  0.3,  0.0,  0.0,  0.0, -0.4],
     "blue_ball":  [ 0.4,  0.6, -0.3,  0.2,  0.0, -0.5],
-    "green_door": [ 0.8,  0.0,  0.0,  0.0,  0.0, -0.3],
-    "corridor":   [ 1.0,  0.0,  0.0,  0.0,  0.4, -0.4],
-    "corner":     [ 0.3,  0.8,  0.5,  0.0,  0.0, -0.6],
+    "orange_box": [ 0.6, -0.2,  0.1,  0.0,  0.0, -0.5],
+    "yellow_box": [ 0.5,  0.0,  0.2,  0.1,  0.0, -0.5],
+    "white_box":  [ 0.5,  0.1, -0.1,  0.0,  0.0, -0.5],
 }
 
 GEMINI_MOCK_RESPONSES = {
     "red_box":    {"reward":0.9, "goal_progress":0.75,
                    "situation":"Rote Box klar sichtbar",
                    "recommendation":"Weiter vorwärts"},
+    "green_ball": {"reward":0.85,"goal_progress":0.65,
+                   "situation":"Grüner Ball sichtbar",
+                   "recommendation":"Langsam nähern"},
     "blue_ball":  {"reward":0.85,"goal_progress":0.65,
                    "situation":"Blauer Ball zentriert",
                    "recommendation":"Langsam nähern"},
-    "green_door": {"reward":0.7, "goal_progress":0.5,
-                   "situation":"Tür teilweise sichtbar",
-                   "recommendation":"Leicht links"},
-    "corridor":   {"reward":0.5, "goal_progress":0.4,
-                   "situation":"Korridor erkennbar",
-                   "recommendation":"Geradeaus"},
-    "corner":     {"reward":0.3, "goal_progress":0.2,
-                   "situation":"Ecke schwer erkennbar",
-                   "recommendation":"Mehr explorieren"},
+    "orange_box": {"reward":0.8, "goal_progress":0.6,
+                   "situation":"Orange Box sichtbar",
+                   "recommendation":"Weiter vorwärts"},
+    "yellow_box": {"reward":0.8, "goal_progress":0.6,
+                   "situation":"Gelbe Box sichtbar",
+                   "recommendation":"Ausrichten"},
+    "white_box":  {"reward":0.7, "goal_progress":0.5,
+                   "situation":"Weiße Box sichtbar",
+                   "recommendation":"Nähern"},
 }
 
 
@@ -1026,9 +1038,9 @@ def run_demo():
             # T13: Scene Prediction (konvergiert über Zeit zur richtigen Klasse)
             scene_vocab = ["red_box","yellow_box","orange_box","white_box",
                            "green_ball","blue_ball","exploring","unknown"]
-            scene_map   = {"red_box": "red_box", "blue_ball": "blue_ball",
-                           "green_door": "green_ball", "corridor": "exploring",
-                           "corner": "exploring"}
+            scene_map   = {"red_box": "red_box", "green_ball": "green_ball",
+                           "blue_ball": "blue_ball", "orange_box": "orange_box",
+                           "yellow_box": "yellow_box", "white_box": "white_box"}
             scene_pred  = scene_map.get(scene, "unknown") if t > 0.3 else "unknown"
 
             dash.update(

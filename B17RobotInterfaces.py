@@ -252,7 +252,7 @@ class MockObsSource(ObservationSource):
     Später ersetzt durch ROS2ObsSource.
     """
 
-    SCENE_TYPES = ["red_box", "blue_ball", "green_door", "corridor", "corner"]
+    SCENE_TYPES = ["red_box", "green_ball", "blue_ball", "orange_box", "yellow_box", "white_box"]
 
     def __init__(self, scene_switch_steps: int = 30,
                  low_res: Tuple = (128, 128),
@@ -280,6 +280,19 @@ class MockObsSource(ObservationSource):
             img[y,2:14] = [100,100,120]
         if scene == "red_box":
             img[8:12,5:9]=[200,40,40]; img[6:9,6:10]=[160,30,30]
+        elif scene == "yellow_box":
+            img[8:12,5:9]=[220,220,30]; img[6:9,6:10]=[180,180,20]
+        elif scene == "orange_box":
+            img[8:12,5:9]=[220,130,20]; img[6:9,6:10]=[180,100,15]
+        elif scene == "white_box":
+            img[8:12,5:9]=[230,230,230]; img[6:9,6:10]=[200,200,200]
+        elif scene == "green_ball":
+            for y in range(16):
+                for x in range(16):
+                    d = np.sqrt((x-8)**2+(y-10)**2)
+                    if d < 3.2:
+                        g = int(255*max(0,1-d/3.2))
+                        img[y,x] = [0,min(255,g),0]
         elif scene == "blue_ball":
             for y in range(16):
                 for x in range(16):
@@ -287,12 +300,6 @@ class MockObsSource(ObservationSource):
                     if d < 3.2:
                         b = int(255*max(0,1-d/3.2))
                         img[y,x] = [0,b//3,min(255,b)]
-        elif scene == "green_door":
-            img[3:8,6:10]=[30,140,50]; img[5,9]=[200,180,0]
-        elif scene == "corridor":
-            img[2:10,2:14]=[90,90,110]; img[4:6,7:9]=[220,220,180]
-        elif scene == "corner":
-            img[2:14,2:8]=[95,90,115]; img[2:14,8:14]=[110,105,130]
         img[10,2:14] = [50,50,50]
 
         # Auf Zielgröße skalieren
@@ -722,10 +729,11 @@ def run_demo():
     }
     SCENE_ACTIONS = {
         "red_box":    [ 0.6,  0.0,  0.0,  0.1,  0.0, -0.5],
+        "green_ball": [ 0.5,  0.3,  0.0,  0.0,  0.0, -0.4],
         "blue_ball":  [ 0.4,  0.6, -0.3,  0.2,  0.0, -0.5],
-        "green_door": [ 0.8,  0.0,  0.0,  0.0,  0.0, -0.3],
-        "corridor":   [ 1.0,  0.0,  0.0,  0.0,  0.4, -0.4],
-        "corner":     [ 0.3,  0.8,  0.5,  0.0,  0.0, -0.6],
+        "orange_box": [ 0.6, -0.2,  0.1,  0.0,  0.0, -0.5],
+        "yellow_box": [ 0.5,  0.0,  0.2,  0.1,  0.0, -0.5],
+        "white_box":  [ 0.5,  0.1, -0.1,  0.0,  0.0, -0.5],
     }
 
     # ── Matplotlib Setup ──────────────────────────────────

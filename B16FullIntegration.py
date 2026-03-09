@@ -160,6 +160,19 @@ def draw_scene(scene_type: str, noise: float = 0.0) -> np.ndarray:
         img[y,2:14] = [100,100,120]
     if scene_type == "red_box":
         img[8:12,5:9]=[200,40,40]; img[6:9,6:10]=[160,30,30]; img[6:12,9]=[120,20,20]
+    elif scene_type == "yellow_box":
+        img[8:12,5:9]=[220,220,30]; img[6:9,6:10]=[180,180,20]; img[6:12,9]=[140,140,10]
+    elif scene_type == "orange_box":
+        img[8:12,5:9]=[220,130,20]; img[6:9,6:10]=[180,100,15]; img[6:12,9]=[140,80,10]
+    elif scene_type == "white_box":
+        img[8:12,5:9]=[230,230,230]; img[6:9,6:10]=[200,200,200]; img[6:12,9]=[170,170,170]
+    elif scene_type == "green_ball":
+        for y in range(16):
+            for x in range(16):
+                d=np.sqrt((x-8)**2+(y-10)**2)
+                if d<3.2:
+                    g=int(255*max(0,1-d/3.2)); h=int(80*max(0,1-((x-7)**2+(y-9)**2)/4))
+                    img[y,x]=[0,min(255,g+h),0]
     elif scene_type == "blue_ball":
         for y in range(16):
             for x in range(16):
@@ -167,16 +180,6 @@ def draw_scene(scene_type: str, noise: float = 0.0) -> np.ndarray:
                 if d<3.2:
                     b=int(255*max(0,1-d/3.2)); h=int(80*max(0,1-((x-7)**2+(y-9)**2)/4))
                     img[y,x]=[0,b//3,min(255,b+h)]
-    elif scene_type == "green_door":
-        img[3:8,6:10]=[30,140,50]; img[3:8,7:9]=[20,180,60]; img[5,9]=[200,180,0]
-        img[3,6:10]=img[8,6:10]=[20,100,30]; img[3:8,6]=img[3:8,10]=[20,100,30]
-    elif scene_type == "corridor":
-        img[2:10,2:14]=[90,90,110]
-        for y in range(2,10):
-            s=max(1,int((y-2)*0.8)); img[y,2:2+s]=[70,70,90]; img[y,14-s:14]=[70,70,90]
-        img[4:6,7:9]=[220,220,180]
-    elif scene_type == "corner":
-        img[2:14,2:8]=[95,90,115]; img[2:14,8:14]=[110,105,130]; img[2:14,8]=[50,45,65]
     img[10,2:14]=[50,50,50]
     if noise > 0:
         img = np.clip(img.astype(int) +
@@ -678,11 +681,12 @@ Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein große
         # Mock
         cmd = user_cmd.lower()
         mapping = [
-            (["roten box","red box"], "find the red box", 0.95),
-            (["blauen ball","blue ball"], "find the blue ball", 0.95),
-            (["tür","door","exit"], "navigate to the exit door", 0.92),
-            (["korridor","corridor"], "explore the corridor", 0.88),
-            (["ecke","corner"], "navigate to the corner", 0.85),
+            (["rote box","red box"],      "find the red box",    0.95),
+            (["gelbe box","yellow box"],   "find the yellow box", 0.95),
+            (["orange box"],               "find the orange box", 0.95),
+            (["weiße box","white box"],    "find the white box",  0.95),
+            (["grünen ball","green ball"], "find the green ball", 0.95),
+            (["blauen ball","blue ball"],  "find the blue ball",  0.95),
         ]
         for keys, goal, conf in mapping:
             if any(k in cmd for k in keys):
@@ -737,19 +741,23 @@ Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein große
             except Exception as e:
                 print(f"  Robotics-Gemini Fehler: {e}")
 
-        # Mock: Farb-Analyse
+        # Mock: Farb-Analyse für 6-Objekt-Umgebung
         img = image_np.astype(float) / 255.0
-        red   = ((img[:,:,0]>0.6)&(img[:,:,1]<0.3)&(img[:,:,2]<0.3)).mean()
-        blue  = ((img[:,:,2]>0.5)&(img[:,:,0]<0.2)).mean()
-        green = ((img[:,:,1]>0.4)&(img[:,:,0]<0.2)&(img[:,:,2]<0.2)).mean()
-        bright= ((img[:,:,0]>0.7)&(img[:,:,1]>0.7)).mean()
+        red    = ((img[:,:,0]>0.6)&(img[:,:,1]<0.3)&(img[:,:,2]<0.3)).mean()
+        blue   = ((img[:,:,2]>0.5)&(img[:,:,0]<0.2)).mean()
+        green  = ((img[:,:,1]>0.4)&(img[:,:,0]<0.2)&(img[:,:,2]<0.2)).mean()
+        yellow = ((img[:,:,0]>0.7)&(img[:,:,1]>0.7)&(img[:,:,2]<0.3)).mean()
+        orange = ((img[:,:,0]>0.7)&(img[:,:,1]>0.3)&(img[:,:,1]<0.6)&(img[:,:,2]<0.2)).mean()
+        white  = ((img[:,:,0]>0.8)&(img[:,:,1]>0.8)&(img[:,:,2]>0.8)).mean()
 
         g = goal.lower()
-        if "red box"   in g: rew = np.clip(red*15,   0, 1); lbl = "red_box_visible"
-        elif "blue"    in g: rew = np.clip(blue*12,  0, 1); lbl = "blue_ball_visible"
-        elif "door"    in g: rew = np.clip(green*20, 0, 1); lbl = "green_door_visible"
-        elif "corridor"in g: rew = np.clip(bright*10,0, 1); lbl = "in_corridor"
-        else:                rew = 0.3;                      lbl = "exploring"
+        if   "red box"    in g: rew = np.clip(red*15,    0, 1); lbl = "red_box_visible"
+        elif "yellow box" in g: rew = np.clip(yellow*15, 0, 1); lbl = "yellow_box_visible"
+        elif "orange box" in g: rew = np.clip(orange*15, 0, 1); lbl = "orange_box_visible"
+        elif "white box"  in g: rew = np.clip(white*12,  0, 1); lbl = "white_box_visible"
+        elif "green ball" in g: rew = np.clip(green*15,  0, 1); lbl = "green_ball_visible"
+        elif "blue ball"  in g: rew = np.clip(blue*12,   0, 1); lbl = "blue_ball_visible"
+        else:                   rew = 0.3;                       lbl = "exploring"
 
         hint = "forward" if rew > 0.5 else ("camera_down" if rew > 0.2 else "left")
         return {

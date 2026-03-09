@@ -225,36 +225,42 @@ class GeminiRoboticsInterface:
         """
         img = image_np.astype(float) / 255.0
 
-        # Farb-Analyse (einfach aber effektiv für unsere Szenen)
-        red_mask    = (img[:,:,0] > 0.6) & (img[:,:,1] < 0.3) & (img[:,:,2] < 0.3)
-        blue_mask   = (img[:,:,2] > 0.5) & (img[:,:,0] < 0.2)
-        green_mask  = (img[:,:,1] > 0.4) & (img[:,:,0] < 0.2) & (img[:,:,2] < 0.2)
-        bright_mask = (img[:,:,0] > 0.7) & (img[:,:,1] > 0.7) & (img[:,:,2] > 0.6)
-
-        red_ratio   = red_mask.mean()
-        blue_ratio  = blue_mask.mean()
-        green_ratio = green_mask.mean()
-        bright_ratio= bright_mask.mean()
+        # Farb-Analyse für 6-Objekt-Umgebung:
+        # 4 Boxen (red, yellow, orange, white) + 2 Bälle (green, blue)
+        red_ratio    = ((img[:,:,0] > 0.6) & (img[:,:,1] < 0.3) & (img[:,:,2] < 0.3)).mean()
+        blue_ratio   = ((img[:,:,2] > 0.5) & (img[:,:,0] < 0.2)).mean()
+        green_ratio  = ((img[:,:,1] > 0.4) & (img[:,:,0] < 0.2) & (img[:,:,2] < 0.2)).mean()
+        yellow_ratio = ((img[:,:,0] > 0.7) & (img[:,:,1] > 0.7) & (img[:,:,2] < 0.3)).mean()
+        orange_ratio = ((img[:,:,0] > 0.7) & (img[:,:,1] > 0.3) & (img[:,:,1] < 0.6) & (img[:,:,2] < 0.2)).mean()
+        white_ratio  = ((img[:,:,0] > 0.8) & (img[:,:,1] > 0.8) & (img[:,:,2] > 0.8)).mean()
 
         goal_lower = goal_text.lower()
 
         # Reward basierend auf Ziel-Übereinstimmung
-        if "red box" in goal_lower or "rote box" in goal_lower:
+        if "red box" in goal_lower or "rote" in goal_lower:
             reward = float(np.clip(red_ratio * 15, 0, 1))
             found  = red_ratio > 0.02
             situation = "Rote Box sichtbar" if found else "Rote Box nicht sichtbar"
-        elif "blue ball" in goal_lower or "blauer ball" in goal_lower:
+        elif "yellow box" in goal_lower or "gelbe" in goal_lower:
+            reward = float(np.clip(yellow_ratio * 15, 0, 1))
+            found  = yellow_ratio > 0.02
+            situation = "Gelbe Box sichtbar" if found else "Gelbe Box nicht sichtbar"
+        elif "orange box" in goal_lower or "orange" in goal_lower:
+            reward = float(np.clip(orange_ratio * 15, 0, 1))
+            found  = orange_ratio > 0.02
+            situation = "Orange Box sichtbar" if found else "Orange Box nicht sichtbar"
+        elif "white box" in goal_lower or "weiße" in goal_lower or "weiss" in goal_lower:
+            reward = float(np.clip(white_ratio * 12, 0, 1))
+            found  = white_ratio > 0.02
+            situation = "Weiße Box sichtbar" if found else "Weiße Box nicht sichtbar"
+        elif "green ball" in goal_lower or "grüne" in goal_lower:
+            reward = float(np.clip(green_ratio * 15, 0, 1))
+            found  = green_ratio > 0.02
+            situation = "Grüner Ball sichtbar" if found else "Grüner Ball nicht sichtbar"
+        elif "blue ball" in goal_lower or "blau" in goal_lower:
             reward = float(np.clip(blue_ratio * 12, 0, 1))
             found  = blue_ratio > 0.02
-            situation = "Blauer Ball sichtbar" if found else "Suche blauen Ball"
-        elif "door" in goal_lower or "tür" in goal_lower or "exit" in goal_lower:
-            reward = float(np.clip(green_ratio * 20, 0, 1))
-            found  = green_ratio > 0.01
-            situation = "Grüne Tür sichtbar" if found else "Tür nicht sichtbar"
-        elif "corridor" in goal_lower or "korridor" in goal_lower:
-            reward = float(np.clip(bright_ratio * 10, 0, 1))
-            situation = "Im Korridor"
-            found  = True
+            situation = "Blauer Ball sichtbar" if found else "Blauer Ball nicht sichtbar"
         else:
             reward    = 0.3
             situation = "Allgemeine Exploration"
@@ -381,6 +387,19 @@ def draw_scene(scene_type: str) -> np.ndarray:
         img[y,2:14] = [100,100,120]
     if scene_type == "red_box":
         img[8:12,5:9]=[200,40,40]; img[6:9,6:10]=[160,30,30]; img[6:12,9]=[120,20,20]
+    elif scene_type == "yellow_box":
+        img[8:12,5:9]=[220,220,30]; img[6:9,6:10]=[180,180,20]; img[6:12,9]=[140,140,10]
+    elif scene_type == "orange_box":
+        img[8:12,5:9]=[220,130,20]; img[6:9,6:10]=[180,100,15]; img[6:12,9]=[140,80,10]
+    elif scene_type == "white_box":
+        img[8:12,5:9]=[230,230,230]; img[6:9,6:10]=[200,200,200]; img[6:12,9]=[170,170,170]
+    elif scene_type == "green_ball":
+        for y in range(16):
+            for x in range(16):
+                d=np.sqrt((x-8)**2+(y-10)**2)
+                if d<3.2:
+                    g=int(255*max(0,1-d/3.2)); h=int(80*max(0,1-((x-7)**2+(y-9)**2)/4))
+                    img[y,x]=[0,min(255,g+h),0]
     elif scene_type == "blue_ball":
         for y in range(16):
             for x in range(16):
@@ -388,26 +407,17 @@ def draw_scene(scene_type: str) -> np.ndarray:
                 if d<3.2:
                     b=int(255*max(0,1-d/3.2)); h=int(80*max(0,1-((x-7)**2+(y-9)**2)/4))
                     img[y,x]=[0,b//3,min(255,b+h)]
-    elif scene_type == "green_door":
-        img[3:8,6:10]=[30,140,50]; img[3:8,7:9]=[20,180,60]; img[5,9]=[200,180,0]
-        img[3,6:10]=img[8,6:10]=[20,100,30]; img[3:8,6]=img[3:8,10]=[20,100,30]
-    elif scene_type == "corridor":
-        img[2:10,2:14]=[90,90,110]
-        for y in range(2,10):
-            s=max(1,int((y-2)*0.8)); img[y,2:2+s]=[70,70,90]; img[y,14-s:14]=[70,70,90]
-        img[4:6,7:9]=[220,220,180]
-    elif scene_type == "corner":
-        img[2:14,2:8]=[95,90,115]; img[2:14,8:14]=[110,105,130]; img[2:14,8]=[50,45,65]
     img[10,2:14]=[50,50,50]
     return img
 
-SCENE_TYPES = ["red_box", "blue_ball", "green_door", "corridor", "corner"]
+SCENE_TYPES = ["red_box", "green_ball", "blue_ball", "orange_box", "yellow_box", "white_box"]
 SCENE_GOALS = {
     "red_box":    "find the red box",
+    "green_ball": "find the green ball",
     "blue_ball":  "find the blue ball",
-    "green_door": "navigate to the exit door",
-    "corridor":   "explore the corridor",
-    "corner":     "navigate to the corner",
+    "orange_box": "find the orange box",
+    "yellow_box": "find the yellow box",
+    "white_box":  "find the white box",
 }
 
 
