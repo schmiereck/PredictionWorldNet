@@ -807,12 +807,14 @@ class Orchestrator:
                     if "avoid_left" in hint:
                         # Seitwärts + leicht vorwärts + nach links drehen
                         self._gemini_override_action = np.array(
-                            [0.3, 0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                            #[0.3, 0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                            [0.3, 1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 5
                         print(f"             → Avoid-Override: LEFT ({self._gemini_override_steps} Steps)")
                     elif "avoid_right" in hint:
                         self._gemini_override_action = np.array(
-                            [0.3, -0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                            #[0.3, -0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                            [0.3, -1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 5
                         print(f"             → Avoid-Override: RIGHT ({self._gemini_override_steps} Steps)")
                     elif "backward" in hint:
