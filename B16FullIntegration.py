@@ -787,6 +787,12 @@ class IntegratedSystem:
             nn.Linear(LATENT_DIM, 128), nn.ReLU(True),
             nn.Linear(128, N_SCENE_CLASSES),
         )
+        # T19: Value-Head für Actor-Critic in Imagination
+        self.value_head = nn.Sequential(
+            nn.Linear(D_MODEL, 256),
+            nn.ReLU(True),
+            nn.Linear(256, 1)
+        )
 
         # Buffer
         self.replay = ReplayBuffer(max_size=config["buffer_size"])
@@ -805,17 +811,23 @@ class IntegratedSystem:
         self.current_goal_emb = self.clip.encode(self.current_goal)
 
         # Optimizer
-        all_params = (
+        world_model_params = (
                 list(self.encoder.parameters()) +
                 list(self.decoder.parameters()) +
                 list(self.rssm.parameters()) +
-                list(self.action_head.parameters()) +
                 list(self.goal_proj.parameters()) +
                 list(self.reward_head.parameters()) +
                 list(self.scene_head.parameters())
         )
         self.optimizer = torch.optim.AdamW(
-            all_params, lr=config["lr"], weight_decay=1e-3
+            world_model_params, lr=config["lr"], weight_decay=1e-3
+        )
+        actor_params = (
+                list(self.action_head.parameters()) +
+                list(self.value_head.parameters())
+        )
+        self.actor_optimizer = torch.optim.AdamW(
+            actor_params, lr=config["lr"], weight_decay=1e-3
         )
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=80, min_lr=1e-4
@@ -916,11 +928,13 @@ class IntegratedSystem:
             "decoder":      self.decoder.state_dict(),
             "rssm":         self.rssm.state_dict(),
             "action_head":  self.action_head.state_dict(),
+            "value_head":   self.value_head.state_dict(),    # T19
             "goal_proj":    self.goal_proj.state_dict(),
             "reward_head":  self.reward_head.state_dict(),   # T14
             "scene_head":   self.scene_head.state_dict(),    # T13
             # Optimizer & Scheduler
             "optimizer":    self.optimizer.state_dict(),
+            "actor_optimizer": self.actor_optimizer.state_dict(),
             "scheduler":    self.scheduler.state_dict(),
             # Training-State
             "total_steps":  self.total_steps,
@@ -1039,10 +1053,21 @@ class IntegratedSystem:
                 if strict:
                     raise
                 print(f"    SceneHead: übersprungen ({e})")
+        if "value_head" in checkpoint:
+            try:
+                self.value_head.load_state_dict(
+                    checkpoint["value_head"], strict=strict)
+            except RuntimeError as e:
+                if strict:
+                    raise
+                print(f"    ValueHead: übersprungen ({e})")
 
         # Optimizer/Scheduler
-        if load_optimizer and "optimizer" in checkpoint:
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if load_optimizer:
+            if "optimizer" in checkpoint:
+                self.optimizer.load_state_dict(checkpoint["optimizer"])
+            if "actor_optimizer" in checkpoint:
+                self.actor_optimizer.load_state_dict(checkpoint["actor_optimizer"])
             if "scheduler" in checkpoint:
                 self.scheduler.load_state_dict(checkpoint["scheduler"])
 
@@ -1068,106 +1093,6 @@ class IntegratedSystem:
             "steps":     steps,
             "config":    checkpoint.get("config", {}),
             "constants": checkpoint.get("constants", {}),
-        }
-
-    # ─────────────────────────────────────────────
-    # T15 – Mehrstufige Imagination (Planning-as-Inference)
-    # ─────────────────────────────────────────────
-
-    @torch.no_grad()
-    def plan_action(self, obs_np: np.ndarray,
-                    horizon: int = 5, n_candidates: int = 32,
-                    discount: float = 0.95) -> dict:
-        """T15: Aktions-Planung durch Imagination im latenten Raum.
-
-        Erzeugt N Kandidaten-Aktionssequenzen, rollt jede über H Schritte
-        im World-Model (RSSM dynamics + reward_head) aus und wählt die
-        erste Aktion der Sequenz mit dem höchsten kumulierten Reward.
-
-        Args:
-            obs_np:       (H, W, 3) aktuelle Beobachtung
-            horizon:      Planungshorizont (Schritte voraus)
-            n_candidates: Anzahl Kandidaten-Sequenzen
-            discount:     Diskontfaktor für zukünftige Rewards
-        Returns:
-            dict mit:
-              "action":           (ACTION_DIM,) beste erste Aktion
-              "plan_reward_best": bester kumulierter Reward
-              "plan_reward_mean": mittlerer kumulierter Reward
-              "plan_reward_std":  Streuung der kumulierten Rewards
-              "plan_used":        True
-        """
-        N = n_candidates
-        H = horizon
-
-        # Bedingung: reward_head muss trainiert sein (genug Gemini-Daten)
-        if self.replay.gemini_count < EFE_GEMINI_RAMP:
-            return {"plan_used": False}
-
-        self.encoder.eval()
-        self.rssm.eval()
-        self.action_head.eval()
-        self.reward_head.eval()
-
-        # Aktuellen Zustand encodieren
-        x = torch.from_numpy(obs_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
-        _, _, z_cur = self.encoder(x)         # (1, latent_dim)
-        goal_p = F.normalize(
-            self.goal_proj(self.current_goal_emb), dim=-1
-        )                                      # (1, latent_dim)
-
-        # Aktuellen RSSM-State lesen (NICHT verändern!)
-        h_cur = self.rssm._h                   # (1, d_model) oder None
-        if h_cur is None:
-            h_cur = torch.zeros(1, self.rssm.d_model, device=z_cur.device)
-
-        # Auf N Kandidaten expandieren
-        z = z_cur.expand(N, -1).contiguous()    # (N, latent_dim)
-        h = h_cur.expand(N, -1).contiguous()    # (N, d_model)
-        gp = goal_p.expand(N, -1).contiguous()  # (N, latent_dim)
-
-        # ActionHead-Vorschlag als Mittelwert + Sigma
-        mean_action, sigma = self.action_head(h)
-
-        # Akkumulierter Reward pro Kandidat
-        cum_reward = torch.zeros(N, device=z.device)
-        first_actions = torch.zeros(N, ACTION_DIM, device=z.device)
-
-        for t in range(H):
-            if t == 0:
-                # Erste Aktion: um ActionHead-Vorschlag herum sampeln
-                noise = torch.randn(N, ACTION_DIM, device=z.device)
-                actions = torch.clamp(mean_action + sigma * noise, -1.0, 1.0)
-                first_actions = actions.clone()
-            else:
-                # Folge-Aktionen: ActionHead auf imaginierten State anwenden
-                a_mean, a_sig = self.action_head(h)
-                noise = torch.randn(N, ACTION_DIM, device=z.device)
-                actions = torch.clamp(a_mean + 0.3 * a_sig * noise, -1.0, 1.0)
-
-            # Dynamics: z_{t+1} vorhersagen
-            pred_z_next = self.rssm.predict_next_z(h, actions)
-
-            # Hidden-State aktualisieren (GRU direkt, nicht self._h!)
-            gru_input = torch.cat([pred_z_next, actions, gp], dim=-1)
-            h = self.rssm.gru(gru_input, h)
-
-            # Reward bewerten
-            r = self.reward_head(
-                torch.cat([pred_z_next, actions], dim=-1)
-            ).squeeze(-1)
-            cum_reward += (discount ** t) * r
-
-        # Beste Sequenz auswählen
-        best_idx = cum_reward.argmax().item()
-        best_action = first_actions[best_idx].cpu().numpy()
-
-        return {
-            "action":           best_action,
-            "plan_reward_best": float(cum_reward[best_idx]),
-            "plan_reward_mean": float(cum_reward.mean()),
-            "plan_reward_std":  float(cum_reward.std()),
-            "plan_used":        True,
         }
 
     def step(self, obs_np: np.ndarray, action_np: np.ndarray,
@@ -1383,43 +1308,16 @@ class IntegratedSystem:
         # T12: RSSM Forward über Sequenz → h_seq (B, L, d_model)
         h_seq = self.rssm.forward_sequence(z_seq, act_seq, goal_p)
 
-        # Per-Step Losses (über L Steps gemittelt)
-        # Gewichte: [linear_x, angular_z, cam_pan, cam_tilt, arc, duration]
-        # Pan/Tilt von 0.05 auf 0.3 erhöht: Kamera-Steuerung ist real
-        # schneller/billiger als Roboter-Drehung → soll gelernt werden.
-        action_weights = torch.tensor(
-            [1.0, 1.0, 0.3, 0.3, 0.3, 0.3], device=obs_flat.device
-        )
-        l_action = l_sigma = l_goal = l_next_z = l_pred_img = l_cam = 0.0
-
-        # T11: EFE-Blend — adaptiv basierend auf Gemini-Daten im Buffer
-        gem_count = self.replay.gemini_count
-        efe_blend = EFE_BLEND_MAX * min(gem_count / EFE_GEMINI_RAMP, 1.0)
+        # ---------------------------------------------------------
+        # 1. World Model Training
+        # ---------------------------------------------------------
+        l_next_z = 0.0
+        l_pred_img = 0.0
+        l_goal = 0.0
 
         for t in range(L):
             ctx = h_seq[:, t]            # (B, d_model)
             act = act_seq[:, t]          # (B, 6)
-
-            pa, ps = self.action_head(ctx)
-
-            # T11: Imitation + EFE Blend
-            # Imitation: MSE zu ausgeführten Aktionen (Stabilisierung)
-            l_imitation_t = (action_weights * (pa - act).pow(2)).mean()
-            # EFE pragmatisch: reward_head bewertet die vorhergesagte Aktion
-            # Gradient fließt: l_efe → reward_head → pa → ActionHead
-            # z ist detached → reward_head bekommt keinen Fehl-Gradienten über z
-            r_pred_efe = self.reward_head(
-                torch.cat([z_seq[:, t].detach(), pa], dim=-1)
-            ).squeeze(-1)
-            l_efe_t = -r_pred_efe.mean()  # maximiere vorhergesagten Reward
-
-            l_action += efe_blend * l_efe_t + (1.0 - efe_blend) * l_imitation_t
-            l_cam    += pa[:, 2:4].pow(2).mean()
-
-            with torch.no_grad():
-                ae = (pa.detach() - act).abs()
-            ss = torch.clamp(ps, min=1e-4)
-            l_sigma += torch.mean(torch.log(ss) + ae / ss)
 
             l_goal += torch.clamp(1 - F.cosine_similarity(
                 F.normalize(ctx[:, :LATENT_DIM], dim=-1), goal_p, dim=-1
@@ -1433,10 +1331,9 @@ class IntegratedSystem:
             nobs_t     = nobs_flat[range(t, B * L, L)]
             l_pred_img += combined_recon_loss(pred_img_t, nobs_t, ssim_weight=0.3)
 
-        # Mittel über Sequenzlänge
-        l_action   /= L;  l_sigma    /= L;  l_goal   /= L
-        l_next_z   /= L;  l_pred_img /= L;  l_cam    /= L
-        l_cam_center = l_cam
+        l_goal   /= L
+        l_next_z   /= L
+        l_pred_img /= L
 
         # T14: Reward-Prädiktor – eigene Stichprobe aus Gemini-Labels im Buffer
         dev = obs_flat.device
@@ -1475,16 +1372,105 @@ class IntegratedSystem:
               0.5  * l_pred_img +       # Nächst-Frame-Prediction im Bildraum
               self.beta * l_kl +
               0.1  * l_next_z +         # Hilfsziel Latent (reduziert, l_pred_img übernimmt)
-              0.2  * l_action +
-              0.05 * l_sigma +
               0.1  * l_goal +
-              0.05 * l_cam_center +
               0.1  * l_reward +         # T14: Reward-Prädiktor
               0.1  * l_scene)           # T13: Szenen-Beschreibung
 
         self.optimizer.zero_grad()
         fe.backward()
 
+        torch.nn.utils.clip_grad_norm_(
+            list(self.encoder.parameters()) +
+            list(self.decoder.parameters()) +
+            list(self.rssm.parameters()) +
+            list(self.goal_proj.parameters()) +
+            list(self.reward_head.parameters()) +
+            list(self.scene_head.parameters()),
+            max_norm=1.0
+        )
+        self.optimizer.step()
+
+        # ---------------------------------------------------------
+        # 2. Actor-Critic Training (Imagination)
+        # ---------------------------------------------------------
+        self.actor_optimizer.zero_grad()
+        self.optimizer.zero_grad()
+
+        h_detached = h_seq.detach()
+        action_weights = torch.tensor(
+            [1.0, 1.0, 0.3, 0.3, 0.3, 0.3], device=dev
+        )
+        l_imitation = torch.tensor(0.0, device=dev)
+        l_sigma = torch.tensor(0.0, device=dev)
+        l_cam = torch.tensor(0.0, device=dev)
+
+        for t in range(L):
+            ctx = h_detached[:, t]
+            act = act_seq[:, t]
+            pa, ps = self.action_head(ctx)
+            
+            l_imitation += (action_weights * (pa - act).pow(2)).mean()
+            l_cam += pa[:, 2:4].pow(2).mean()
+            
+            with torch.no_grad():
+                ae = (pa.detach() - act).abs()
+            ss = torch.clamp(ps, min=1e-4)
+            l_sigma += torch.mean(torch.log(ss) + ae / ss)
+
+        l_imitation /= L
+        l_sigma /= L
+        l_cam /= L
+        l_cam_center = l_cam
+
+        gem_count = self.replay.gemini_count
+        efe_blend = EFE_BLEND_MAX * min(gem_count / EFE_GEMINI_RAMP, 1.0)
+        
+        l_img_actor = torch.tensor(0.0, device=dev)
+        l_value = torch.tensor(0.0, device=dev)
+
+        if gem_count >= EFE_GEMINI_RAMP:
+            H_imag = 5
+            h_flat = h_detached.reshape(-1, D_MODEL)
+            gp_imag = goal_p.detach().unsqueeze(1).expand(-1, L, -1).reshape(-1, LATENT_DIM)
+            
+            h_i = h_flat
+            rewards = []
+            values = []
+            
+            for _ in range(H_imag):
+                a_i, _ = self.action_head(h_i)
+                z_next = self.rssm.predict_next_z(h_i, a_i)
+                gru_input = torch.cat([z_next, a_i, gp_imag], dim=-1)
+                h_i = self.rssm.gru(gru_input, h_i)
+                
+                r_i = self.reward_head(torch.cat([z_next, a_i], dim=-1)).squeeze(-1)
+                v_i = self.value_head(h_i).squeeze(-1)
+                
+                rewards.append(r_i)
+                values.append(v_i)
+                
+            rewards = torch.stack(rewards, dim=0) # (H_imag, N)
+            values = torch.stack(values, dim=0)   # (H_imag, N)
+            
+            gamma = 0.95
+            lam = 0.95
+            
+            returns = torch.zeros_like(values)
+            last_val = values[-1]
+            returns[-1] = rewards[-1] + gamma * last_val
+            for t in reversed(range(H_imag - 1)):
+                returns[t] = rewards[t] + gamma * ((1 - lam) * values[t+1] + lam * returns[t+1])
+                
+            l_value = F.mse_loss(values, returns.detach())
+            l_img_actor = -returns.mean()
+
+        l_actor_total = efe_blend * l_img_actor + (1 - efe_blend) * l_imitation
+        l_ac_final = 0.2 * l_actor_total + 0.05 * l_sigma + 0.05 * l_cam
+        if gem_count >= EFE_GEMINI_RAMP:
+            l_ac_final += 0.1 * l_value
+            
+        l_ac_final.backward()
+        
         # Gradient-Norm pro Modul (Monitoring)
         def _grad_norm(module):
             return sum(p.grad.norm().item()**2
@@ -1499,19 +1485,14 @@ class IntegratedSystem:
             "reward_head": _grad_norm(self.reward_head),
             "scene_head":  _grad_norm(self.scene_head),
         }
-
+        
         torch.nn.utils.clip_grad_norm_(
-            list(self.encoder.parameters()) +
-            list(self.decoder.parameters()) +
-            list(self.rssm.parameters()) +
-            list(self.action_head.parameters()) +
-            list(self.goal_proj.parameters()) +
-            list(self.reward_head.parameters()) +
-            list(self.scene_head.parameters()),
+            list(self.action_head.parameters()) + list(self.value_head.parameters()),
             max_norm=1.0
         )
-        self.optimizer.step()
+        self.actor_optimizer.step()
         self.scheduler.step(l_recon.detach())
+        l_action = l_actor_total  # for logging
 
         kl_val = float(l_kl.detach())
         # Mit Free-Bits ist l_kl >= 0.5 (Clamp-Floor). Warnung wenn unerwarteter Collapse.
@@ -2003,3 +1984,4 @@ def run_demo():
 
 if __name__ == "__main__":
     run_demo()
+

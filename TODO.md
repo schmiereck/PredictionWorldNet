@@ -40,7 +40,7 @@ Gemini liefert den pragmatischen Term als externe semantische Bewertung.
 ## Stand der Architektur (aktuell implementiert)
 
 ```
-Encoder      VAE, GroupNorm, 128×128 → z (64-dim)                 ✅
+Encoder      VAE, GroupNorm, 128×128 → z (256-dim)                ✅
 Decoder      Rekonstruktion UND Next-Frame-Prediction aus pred_z   ✅
 Transformer  z + goal + a_hist → context                           ✅
 ActionHead   context → action (6D) + sigma (Unsicherheit)          ✅
@@ -52,84 +52,42 @@ Strategie    B22/B23 Sigma-Blending                                ✅
 
 ---
 
-## 🔴 Priorität 1 – Kern des World-Models
+## 🔴 Priorität 1 – Imagination & Planning skalieren
 
-### T10 – Aktions-konditioniertes Transitions-Modell ✅ ERLEDIGT → DONE.md
+### T19 – Actor-Critic Training in der Imagination (Dreamer-Stil)
+**Problem:** `plan_action()` nutzt "Random Shooting" (N=32, H=5). Das ist eine Brute-Force-Suche zur Laufzeit. Es skaliert sehr schlecht, wenn der Horizont größer wird, und verlangsamt die Inferenz.
+**Lösung:** Statt zur Laufzeit zu suchen, trainieren wir einen "Actor" und einen "Value/Critic" **ausschließlich auf den imaginierten Trajektorien**. 
+  - Der `Value-Head` lernt, den erwarteten zukünftigen Reward (bzw. die negative EFE) für einen Zustand `h_t` vorherzusagen.
+  - Der `Action-Head` (Actor) wird so trainiert, dass seine vorgeschlagenen Aktionen den Wert des Value-Heads maximieren.
+**Vorteil:** Zur Laufzeit muss das Modell nicht mehr aufwendig Trajektorien berechnen (`plan_action` entfällt). Der Action-Head liefert direkt in O(1) die optimale, langfristig geplante Aktion.
 
-`dynamics_head(cat([context, a_t])) → z_{t+1}` implementiert.
-Headless-Testmodus + CSV-Logging als Nebenprodukt.
-
----
-
-### T11 – Expected Free Energy (EFE) als Aktions-Auswahlprinzip ✅ ERLEDIGT → DONE.md
-
-EFE-basierte Aktionswahl implementiert: Adaptiver Blend zwischen Imitation und EFE.
-`reward_head(z, predicted_action)` liefert pragmatischen EFE-Term.
-
----
-
-## 🟡 Priorität 2 – Weltzustand und Semantik
-
-### T12 – Rekurrenter Weltzustand (RSSM-Kern, DreamerV3-Stil) ✅ ERLEDIGT → DONE.md
+### T20 – Echte Epistemische Unsicherheit durch ein Dynamics-Ensemble
+**Problem:** Aktuell ist `sigma` einfach ein Output des ActionHeads, trainiert via NLL. Das misst eher die "Rauschigkeit" der Aktion, aber nicht die echte Unsicherheit des Weltmodells über die Umgebung (epistemische Unsicherheit).
+**Lösung:** Wir instanziieren ein kleines Ensemble von `dynamics_head` Modellen (z.B. 3 bis 5 Stück), die alle parallel trainiert werden. Die Varianz zwischen ihren Vorhersagen (`Var[z_{t+1}]`) ist ein echtes mathematisches Maß für "Neugier" (Information Gain).
+**Vorteil:** Der Agent wird extrem zielgerichtet Räume und Objekte ansteuern, bei denen sich die Dynamics-Heads "uneinig" sind. Das ist pure Active Inference.
 
 ---
 
-### T13 – Semantischer Selbstbeschreibungs-Kopf ✅ ERLEDIGT → DONE.md
+## 🟡 Priorität 2 – Repräsentation & Semantik
 
-`scene_head(z) → N_SCENE_CLASSES` mit SCENE_VOCAB + SCENE_LABEL_MAP implementiert.
-`scene_pred` in steps-CSV; l_scene in train-CSV.
+### T21 – Contrastive Learning für den VAE-Encoder (SimCLR/BYOL)
+**Problem:** Der Encoder wird aktuell fast nur über den Reconstruction Loss (MSE + SSIM) trainiert. Er muss also Pixel genau abspeichern, was Kapazität kostet und ihn anfällig für irrelevante Details (Licht, Rauschen).
+**Lösung:** Ein "Contrastive Loss" wird hinzugefügt. Ein Bild wird zweifach mit leichtem Rauschen/Farbverschiebungen versehen. Der Encoder muss lernen, dass beide Bilder denselben Latent-Vektor `z` erzeugen sollen.
+**Vorteil:** Der Latent Space ordnet sich stärker nach Semantik (Objekte) als nach Pixeln. Die Kopplung mit dem CLIP-Goal-Embedding (B05) wird dadurch massiv besser und robuster.
 
----
-
-### T14 – Reward-Prädiktor im latenten Raum ✅ ERLEDIGT → DONE.md
-
-`reward_head(cat([z, a])) → r_gemini` implementiert.
-Eigene Gemini-Stichprobe (require_gemini=True); `r_reward_pred` in steps-CSV.
-
----
-
-## 🟢 Priorität 3 – Skalierung und Planung
-
-### T15 – Mehrstufige Imagination (Planning-as-Inference) ✅ ERLEDIGT → DONE.md
-
-`plan_action()` in IntegratedSystem: Random Shooting mit N=32, H=5.
-B19 nutzt geplante Aktion als nn_action im Strategy-Blend.
+### T22 – Hierarchische Ziele (Gemini → Sub-Goals)
+**Problem:** Gemini gibt uns ein globales Ziel (`a red box`). Die Strategie (B22/B23) ist aktuell eher regelbasiert.
+**Lösung:** Gemini wird angewiesen, konkrete textuelle Sub-Goals zu generieren (z.B. "Drehe dich, bis die Wand weg ist", "Gehe auf den blauen Blob zu"). Diese Sub-Goals werden on-the-fly durch den CLIP-Encoder gejagt und überschreiben temporär das `goal_proj` des Modells. 
+**Vorteil:** Das neuronale Netz muss nur noch einfache Micro-Tasks lösen, der LLM-Planer behält die Makro-Kontrolle.
 
 ---
 
-### T16 – LATENT_DIM 64 → 256 ✅ ERLEDIGT → DONE.md
+## 🟢 Priorität 3 – Effizienz im Training
 
----
-
-### T17 – Offline-Vortraining der Dynamics ✅ ERLEDIGT → DONE.md
-
----
-
-### T18 – Free Energy Dashboard-Erweiterung ✅ ERLEDIGT → DONE.md
-
----
-
-## Empfohlene Reihenfolge
-
-```
-T10  Aktions-konditionierte Dynamik          ← Jetzt (Fundament)
- ↓
-T14  Reward-Prädiktor                        ← Klein, sofort nach T10
- ↓
-T13  Semantischer Beschreibungs-Kopf         ← Parallel zu T14
- ↓
-T16  LATENT_DIM 64 → 256                     ← Eigener Milestone (Pre-Training)
- ↓
-T12  RSSM Rekurrenter Weltzustand            ← Größter Schritt, nach T10 stabil
- ↓
-T11  EFE als Aktionsprinzip                  ← Nach T12 + T14
- ↓
-T17  Offline Dynamics-Vortraining            ← Parallel zu T12
- ↓
-T15  Mehrstufige Imagination                 ← Finale Stufe
- ↓
-T18  FE-Dashboard                            ← Begleitend zu T11/T15
-```
+### T23 – Prioritized Experience Replay (PER)
+**Problem:** Der Buffer samplet uniform. Eine Sequenz, bei der der Roboter nur gegen eine Wand starrt, wird genauso oft trainiert wie der seltene Moment, in dem er die Rote Box entdeckt.
+**Lösung:** Sequenzen mit einem hohen Prediction Error (FE) oder hohen Gemini-Rewards bekommen ein höheres Gewicht beim Sampling aus dem Ringpuffer.
+**Vorteil:** Drastisch schnellere Konvergenz, gerade für die seltenen, aber wertvollen Gemini-gestützten Trajektorien.
 
 ---
 
@@ -142,13 +100,13 @@ T18  FE-Dashboard                            ← Begleitend zu T11/T15
 | Next-Frame Prediction   | P(o_{t+1}\|s_t)                    | ✅ neu       |      |
 | KL + Free Bits          | Complexity (FE-Term)               | ✅ vorhanden |      |
 | Gemini-Reward           | Pragmatischer EFE-Term             | ✅ vorhanden |      |
-| Sigma-Unsicherheit      | Epistemischer EFE-Term (Proxy)     | ✅ vorhanden |      |
+| Sigma-Unsicherheit      | Epistemischer EFE-Term (Proxy)     | ✅ vorhanden | T20  |
 | Transition-Modell       | P(s_{t+1}\|s_t, **a_t**)          | ✅ T10       |      |
-| EFE-Aktionswahl         | Aktionen minimieren EFE            | ✅ T11       |      |
+| EFE-Aktionswahl         | Aktionen minimieren EFE            | ✅ T11       | T19  |
 | GRU-Weltzustand         | Q(s_t\|o_{0:t}, a_{0:t}) (RSSM)   | ✅ T12       |      |
 | Semantik-Kopf           | P(label\|s) – Szene beschreiben   | ✅ T13       |      |
 | Reward-Prädiktor        | Pragmatischer Prior P(o\|bevorzugt)| ✅ T14       |      |
-| Imagination             | Planning-as-Inference              | ✅ T15       |      |
+| Imagination             | Planning-as-Inference              | ✅ T15       | T19  |
 | Größerer Latent         | Reicherer Zustandsraum             | ✅ T16       |      |
 | Offline Dynamics        | Vortraining dynamics_head          | ✅ T17       |      |
 | FE Dashboard            | Complexity/Inaccuracy sichtbar     | ✅ T18       |      |
