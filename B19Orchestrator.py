@@ -226,7 +226,9 @@ class MiniWorldObsSource(_b17.ObservationSource):
             _register_prediction_world_env(gym)
 
             self._env = gym.make(env_name, render_mode=render_mode,
-                                 view="agent")
+                                 view="agent",
+                                 obs_width=low_res[0],
+                                 obs_height=low_res[1])
             obs, _    = self._env.reset()
             self._obs = obs
             self._available = True
