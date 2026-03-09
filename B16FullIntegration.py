@@ -336,12 +336,14 @@ class RSSM(nn.Module):
         gru_input_dim = latent_dim + action_dim + latent_dim
         self.gru = nn.GRUCell(gru_input_dim, d_model)
 
-        # dynamics_head: cat(h_t, a_t) → z_{t+1}  (identisch zur alten Version)
-        self.dynamics_head = nn.Sequential(
-            nn.Linear(d_model + action_dim, d_model * 2),
-            nn.ReLU(True),
-            nn.Linear(d_model * 2, latent_dim),
-        )
+        # T20: Ensemble von Dynamics-Heads für echte epistemische Unsicherheit
+        self.dynamics_ensemble = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_model + action_dim, d_model * 2),
+                nn.ReLU(True),
+                nn.Linear(d_model * 2, latent_dim),
+            ) for _ in range(5)
+        ])
 
         # Persistent hidden state (für Inferenz, Schritt-für-Schritt)
         self._h = None
@@ -399,9 +401,25 @@ class RSSM(nn.Module):
 
         return torch.stack(h_all, dim=1)   # (B, L, d_model)
 
-    def predict_next_z(self, context, action):
-        """T10: Aktions-konditionierte Zustandsvorhersage P(z_{t+1} | h_t, a_t)."""
-        return self.dynamics_head(torch.cat([context, action], dim=-1))
+    def predict_next_z(self, context, action, ensemble_idx=None):
+        """T10/T20: Aktions-konditionierte Zustandsvorhersage P(z_{t+1} | h_t, a_t).
+        
+        Args:
+            context:      (B, d_model)
+            action:       (B, action_dim)
+            ensemble_idx: Wenn gesetzt, nur diesen Kopf nutzen. Wenn None, Kopf 0 nutzen.
+        """
+        x = torch.cat([context, action], dim=-1)
+        if ensemble_idx is not None:
+            return self.dynamics_ensemble[ensemble_idx](x)
+        return self.dynamics_ensemble[0](x)
+
+    def get_epistemic_uncertainty(self, context, action):
+        """T20: Berechnet die Uneinigkeit (Varianz) des Ensembles."""
+        x = torch.cat([context, action], dim=-1)
+        preds = torch.stack([head(x) for head in self.dynamics_ensemble], dim=0) # (5, B, latent_dim)
+        variance = preds.var(dim=0).mean(dim=-1) # (B,)
+        return variance
 
 
 class ActionHead(nn.Module):
@@ -575,28 +593,29 @@ class GeminiClients:
 Antworte NUR mit JSON: {"primary_goal": "...", "confidence": 0.0-1.0}"""
 
     ROBOTICS_SYSTEM = """Du bist der Navigations-Assistent eines niedrig gebauten Hexapod-Roboters.
-Der Roboter hat eine Kamera auf ca. 20cm Höhe und bleibt leicht an Objekten hängen.
-Deine Aufgabe: Den Roboter sicher zum Ziel lotsen UND an Hindernissen vorbeiführen.
+Der Roboter hat eine Kamera auf ca. 50cm Höhe. Die meisten Zielobjekte (Boxen, Bälle) sind flacher als die Kamera.
+Deine Aufgabe: Den Roboter sicher zum Ziel lotsen, an Hindernissen vorbeiführen UND das Ziel im Blick behalten.
 
 Antworte NUR mit JSON:
 {"reward": 0.0-1.0, "goal_progress": 0.0-1.0,
  "situation": "kurze Beschreibung was du siehst",
  "recommendation": "was der Roboter tun soll",
- "next_action_hint": "EINES von: vorwärts/links/rechts/stopp/zurück/kamera/ausweichen_links/ausweichen_rechts",
+ "next_action_hint": "ONE OF: forward/left/right/stop/backward/camera_down/camera_up/avoid_left/avoid_right",
  "training_label": "kurzes Label für diesen Zustand"}
 
-Regeln für next_action_hint:
-- "ausweichen_links" oder "ausweichen_rechts": Ein Objekt das NICHT das Ziel ist,
-  ist sehr nah oder blockiert den Weg (nimmt >30% des Bildes ein). Der Roboter muss
-  daran vorbei. Wähle die Seite mit mehr freiem Platz. reward=0.1, training_label="hindernis".
-- "zurück": Der Roboter steckt fest oder ist zu dicht an einem Hindernis. reward=0.05.
-- "stopp": Das Ziel-Objekt ist nah und zentriert. reward=0.9-1.0.
-- "vorwärts": Das Ziel ist sichtbar und der Weg ist frei.
-- "links"/"rechts": Das Ziel ist nicht sichtbar, der Roboter soll sich drehen.
-- "kamera": Das Ziel ist am Bildrand — Kameraschwenk reicht, keine Drehung nötig.
+WICHTIGES VERHALTEN BEIM NÄHERKOMMEN:
+Da Objekte niedriger sind als die Kamera, verschwinden sie am unteren Bildrand, wenn der Roboter sehr nah kommt!
+Wenn ein Zielobjekt nah ist (nimmt viel Platz ein, wandert nach unten), MUSS der Roboter die Kamera nach unten neigen ("camera_down"), um es nicht aus den Augen zu verlieren.
 
-Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein großes,
-nahes Objekt siehst das NICHT das Ziel ist, sage IMMER "ausweichen", nicht "vorwärts"."""
+Regeln für next_action_hint und reward:
+- "stop": Das Ziel-Objekt ist extrem nah und zentriert im Bild (Erfolg). reward=1.0.
+- "camera_down": Das Ziel ist nah, droht aber am unteren Bildrand zu verschwinden. reward=0.8.
+- "forward": Das Ziel ist gut sichtbar und mittig, der Weg ist frei. reward=0.6 bis 0.8.
+- "left"/"right": Das Ziel ist nur am Rand sichtbar oder gar nicht. Der Roboter soll suchen/drehen. reward=0.1 bis 0.3.
+- "avoid_left" / "avoid_right": Ein Objekt das NICHT das Ziel ist, blockiert den Weg. reward=0.1, training_label="hindernis".
+- "backward": Der Roboter steckt an einer Wand oder einem falschen Objekt fest (Bild ist komplett verdeckt). reward=0.05.
+
+Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein großes, nahes Objekt siehst das NICHT das Ziel ist, sage IMMER "avoid" oder "backward"."""
 
     def __init__(self, api_key: str = None):
         self.mode = "mock"
@@ -715,12 +734,12 @@ nahes Objekt siehst das NICHT das Ziel ist, sage IMMER "ausweichen", nicht "vorw
         elif "corridor"in g: rew = np.clip(bright*10,0, 1); lbl = "in_corridor"
         else:                rew = 0.3;                      lbl = "exploring"
 
-        hint = "vorwärts" if rew > 0.5 else ("kamera" if rew > 0.2 else "links")
+        hint = "forward" if rew > 0.5 else ("camera_down" if rew > 0.2 else "left")
         return {
             "reward":          float(rew),
             "goal_progress":   float(rew * 0.8),
             "situation":       f"Mock: {lbl}",
-            "recommendation":  "vorwärts" if rew > 0.5 else "erkunden",
+            "recommendation":  "forward" if rew > 0.5 else "explore",
             "next_action_hint":hint,
             "training_label":  lbl,
             "source":          "mock_robotics",
@@ -1308,9 +1327,7 @@ class IntegratedSystem:
         # T12: RSSM Forward über Sequenz → h_seq (B, L, d_model)
         h_seq = self.rssm.forward_sequence(z_seq, act_seq, goal_p)
 
-        # ---------------------------------------------------------
-        # 1. World Model Training
-        # ---------------------------------------------------------
+        # Per-Step Losses (über L Steps gemittelt)
         l_next_z = 0.0
         l_pred_img = 0.0
         l_goal = 0.0
@@ -1323,11 +1340,15 @@ class IntegratedSystem:
                 F.normalize(ctx[:, :LATENT_DIM], dim=-1), goal_p, dim=-1
             ), 0.0, 1.0).mean()
 
-            pzn = self.rssm.predict_next_z(ctx, act)
-            l_next_z += F.mse_loss(pzn, z_next_seq[:, t].detach())
+            # T20: Alle 5 Ensemble-Mitglieder trainieren
+            for i in range(5):
+                pzn = self.rssm.predict_next_z(ctx, act, ensemble_idx=i)
+                l_next_z += F.mse_loss(pzn, z_next_seq[:, t].detach()) / 5.0
 
             # Pred-Image: nobs für Step t (Indices: t, L+t, 2L+t, ...)
-            pred_img_t = self.decoder(pzn)
+            # (Nutzt weiterhin Kopf 0 für das Bild-Rendering)
+            pzn_main = self.rssm.predict_next_z(ctx, act, ensemble_idx=0)
+            pred_img_t = self.decoder(pzn_main)
             nobs_t     = nobs_flat[range(t, B * L, L)]
             l_pred_img += combined_recon_loss(pred_img_t, nobs_t, ssim_weight=0.3)
 
@@ -1615,8 +1636,8 @@ def run_demo():
             sum(p.numel() for p in system.rssm.parameters()) +
             sum(p.numel() for p in system.action_head.parameters())
     )
-    # Dynamics-Head Parameter separat anzeigen (T10)
-    dyn_params = sum(p.numel() for p in system.rssm.dynamics_head.parameters())
+    # Dynamics-Head Parameter (eines Kopfes) separat anzeigen
+    dyn_params = sum(p.numel() for p in system.rssm.dynamics_ensemble[0].parameters())
     print(f"Gesamt-Parameter: {total_params:,}  (davon dynamics_head: {dyn_params:,})")
     print(f"Steps: {config['n_steps']}")
     print(f"Logs:  logs/steps_{system._log_ts}.csv")

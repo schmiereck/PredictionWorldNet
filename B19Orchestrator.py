@@ -792,22 +792,22 @@ class Orchestrator:
 
                     # Gemini Ausweich-Override prüfen
                     hint = ass.get("next_action_hint", "").lower()
-                    if "ausweichen_links" in hint:
+                    if "avoid_left" in hint:
                         # Seitwärts + leicht vorwärts + nach links drehen
                         self._gemini_override_action = np.array(
                             [0.3, 0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 5
-                        print(f"             → Ausweich-Override: LINKS ({self._gemini_override_steps} Steps)")
-                    elif "ausweichen_rechts" in hint:
+                        print(f"             → Avoid-Override: LEFT ({self._gemini_override_steps} Steps)")
+                    elif "avoid_right" in hint:
                         self._gemini_override_action = np.array(
                             [0.3, -0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 5
-                        print(f"             → Ausweich-Override: RECHTS ({self._gemini_override_steps} Steps)")
-                    elif "zurück" in hint:
+                        print(f"             → Avoid-Override: RIGHT ({self._gemini_override_steps} Steps)")
+                    elif "backward" in hint:
                         self._gemini_override_action = np.array(
                             [-0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 3
-                        print(f"             → Ausweich-Override: ZURÜCK ({self._gemini_override_steps} Steps)")
+                        print(f"             → Backward-Override: BACK ({self._gemini_override_steps} Steps)")
             else:
                 gemini_event = None
 

@@ -83,15 +83,19 @@ Antworte NUR mit validem JSON:
   "situation": "kurze Situationsbeschreibung",
   "recommendation": "konkrete Empfehlung für nächste Aktion",
   "obstacles": ["erkannte Hindernisse"],
-  "next_action_hint": "vorwärts/links/rechts/stopp/kamera_pan/kamera_tilt",
+  "next_action_hint": "forward/left/right/stop/camera_down/camera_up/avoid_left/avoid_right",
   "confidence": 0.0-1.0
 }
 
+WICHTIGES VERHALTEN BEIM NÄHERKOMMEN:
+Da Objekte niedriger sind als die Kamera, verschwinden sie am unteren Bildrand, wenn der Roboter sehr nah kommt!
+Wenn ein Zielobjekt nah ist, MUSS der Roboter die Kamera nach unten neigen ("camera_down"), um es nicht aus den Augen zu verlieren.
+
 Bewertungsregeln:
-- reward=1.0: Ziel klar sichtbar und erreichbar
-- reward=0.5: Ziel teilweise sichtbar oder in Reichweite
-- reward=0.0: Ziel nicht sichtbar, falsche Richtung
-- goal_progress: wie viel % des Weges zum Ziel geschafft
+- reward=1.0: Ziel klar sichtbar, zentriert und nah (Erfolg).
+- reward=0.8: Ziel nah, camera_down empfohlen.
+- reward=0.6: Ziel gut sichtbar und mittig, Weg frei.
+- reward=0.1: Ziel nicht sichtbar oder blockiert.
 """
 
 ROBOTICS_USER_TEMPLATE = """Aktuelles Ziel: "{goal}"
