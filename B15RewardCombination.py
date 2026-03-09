@@ -73,40 +73,39 @@ except ImportError:
 # GEMINI ROBOTICS VISUAL INTERFACE
 # ─────────────────────────────────────────────
 
-ROBOTICS_SYSTEM_PROMPT = """Du bist ein KI-Assistent für einen mobilen Roboter mit Kamera.
-Du bewertest Kamerabilder und gibst Trainings-Feedback.
+ROBOTICS_SYSTEM_PROMPT = """You are an AI assistant for a mobile robot equipped with a camera.
+You evaluate camera images and provide training feedback.
 
-Antworte NUR mit validem JSON:
+Respond ONLY with valid JSON:
 {
   "reward": 0.0-1.0,
   "goal_progress": 0.0-1.0,
-  "situation": "kurze Situationsbeschreibung",
-  "recommendation": "konkrete Empfehlung für nächste Aktion",
-  "obstacles": ["erkannte Hindernisse"],
+  "situation": "brief description of the situation",
+  "recommendation": "specific recommendation for the next action",
+  "obstacles": ["detected obstacles"],
   "next_action_hint": "forward/left/right/stop/camera_down/camera_up/avoid_left/avoid_right",
   "confidence": 0.0-1.0
 }
 
-WICHTIGES VERHALTEN BEIM NÄHERKOMMEN:
-Da Objekte niedriger sind als die Kamera, verschwinden sie am unteren Bildrand, wenn der Roboter sehr nah kommt!
-Wenn ein Zielobjekt nah ist, MUSS der Roboter die Kamera nach unten neigen ("camera_down"), um es nicht aus den Augen zu verlieren.
-Achte besonders auf Objekte am unteren Bildrand die oft nur teilweise sichtbar sind. 
-Gib dann die Empfehlung ein Stück rückwärts zu fahren und die Kamera zu neigen, damit das Ziel wieder vollständig sichtbar wird.
-Der Boter muss dann das Hindernis umfahren, auch wenn dabei das Ziel aus dem Blickfeld gerät.
+IMPORTANT BEHAVIOR WHEN APPROACHING:
+Since objects are lower than the camera, they disappear at the bottom edge of the image when the robot gets very close!
+When a target object is close, the robot MUST tilt the camera down ("camera_down") to avoid losing sight of it.
+Pay close attention to objects at the bottom edge of the image, which are often only partially visible. 
+In such cases, recommend driving back a bit and tilting the camera down so the target becomes fully visible again.
+The robot must then navigate around obstacles, even if the target temporarily leaves the field of view.
 
-Bewertungsregeln:
-- reward=1.0: Ziel klar sichtbar, zentriert und nah (Erfolg).
-- reward=0.8: Ziel nah, camera_down empfohlen.
-- reward=0.6: Ziel gut sichtbar und mittig, Weg frei.
-- reward=0.1: Ziel nicht sichtbar oder blockiert.
+Evaluation Rules:
+- reward=1.0: Target clearly visible, centered, and close (success).
+- reward=0.8: Target close, camera_down recommended.
+- reward=0.6: Target clearly visible and centered, path is clear.
+- reward=0.1: Target not visible or blocked.
 """
 
-ROBOTICS_USER_TEMPLATE = """Aktuelles Ziel: "{goal}"
-Letzte Aktion: linear_x={linear_x:.2f} m/s, angular_z={angular_z:.2f} rad/s,
-               camera_pan={camera_pan:.0f}°, camera_tilt={camera_tilt:.0f}°
+ROBOTICS_USER_TEMPLATE = """Current Goal: "{goal}"
+Last Action: linear_x={linear_x:.2f} m/s, angular_z={angular_z:.2f} rad/s,
+             camera_pan={camera_pan:.0f}°, camera_tilt={camera_tilt:.0f}°
 
-Bitte bewerte das Kamerabild und gib Trainings-Feedback."""
-
+Please evaluate the camera image and provide training feedback."""
 
 class GeminiRoboticsInterface:
     """
