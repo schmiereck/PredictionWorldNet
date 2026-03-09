@@ -455,6 +455,8 @@ class ReplayBuffer:
         self.gemini_labels   = [""] * max_size
         # T12: Episode-Grenze (True = letzter Step vor Reset)
         self.dones = np.zeros(max_size, dtype=bool)
+        # T23: Prioritized Experience Replay (PER)
+        self.priorities = np.zeros(max_size, dtype=np.float32)
 
     def add(self, obs, next_obs, action, reward, goal="",
             gemini_reward=np.nan, gemini_label="", done=False):
@@ -465,6 +467,8 @@ class ReplayBuffer:
         self.gemini_rewards[i] = gemini_reward
         self.gemini_labels[i]  = gemini_label
         self.dones[i] = done
+        # T23: initial priority
+        self.priorities[i] = self.priorities.max() if self.size > 0 else 1.0
         self.ptr  = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
@@ -491,9 +495,18 @@ class ReplayBuffer:
         if len(valid_idx) == 0:
             return None
 
+        # T23: PER probabilities
+        p = self.priorities[valid_idx] ** 0.6
+        p_sum = p.sum()
+        if p_sum > 0:
+            p /= p_sum
+        else:
+            p = np.ones_like(p) / len(p)
+
         chosen = np.random.choice(
             valid_idx, min(batch_size, len(valid_idx)),
-            replace=len(valid_idx) < batch_size
+            replace=len(valid_idx) < batch_size,
+            p=p
         )
         B = len(chosen)
         obs_s   = np.zeros((B, seq_len, *OBS_SHAPE), dtype=np.uint8)
@@ -513,6 +526,7 @@ class ReplayBuffer:
             "next_obs": torch.from_numpy(nobs_s).float() / 255.0,
             "actions":  torch.from_numpy(act_s),
             "goals":    goals,
+            "indices":  chosen,
         }
 
     def sample(self, batch_size, require_gemini=False):
@@ -538,6 +552,9 @@ class ReplayBuffer:
     @property
     def gemini_count(self):
         return int(np.sum(~np.isnan(self.gemini_rewards[:self.size])))
+
+    def update_priorities(self, indices, errors):
+        self.priorities[indices] = np.abs(errors) + 1e-5
 
 
 # ─────────────────────────────────────────────
@@ -1295,6 +1312,7 @@ class IntegratedSystem:
 
         B = len(seq_batch["goals"])
         L = SEQ_LEN
+        batch_indices = seq_batch["indices"]
 
         # (B, L, H, W, 3) → (B*L, 3, H, W) für Encoder
         obs_flat  = seq_batch["obs"].reshape(B * L, *OBS_SHAPE).permute(0, 3, 1, 2)
@@ -1331,19 +1349,28 @@ class IntegratedSystem:
         l_next_z = 0.0
         l_pred_img = 0.0
         l_goal = 0.0
+        
+        # T23: Fehler pro Sequenz sammeln für PER
+        batch_errors = torch.zeros(B, device=dev)
 
         for t in range(L):
             ctx = h_seq[:, t]            # (B, d_model)
             act = act_seq[:, t]          # (B, 6)
 
-            l_goal += torch.clamp(1 - F.cosine_similarity(
+            # Goal-Loss per Element für PER
+            goal_dist = torch.clamp(1 - F.cosine_similarity(
                 F.normalize(ctx[:, :LATENT_DIM], dim=-1), goal_p, dim=-1
-            ), 0.0, 1.0).mean()
+            ), 0.0, 1.0)
+            l_goal += goal_dist.mean()
+            batch_errors += goal_dist.detach()
 
             # T20: Alle 5 Ensemble-Mitglieder trainieren
             for i in range(5):
                 pzn = self.rssm.predict_next_z(ctx, act, ensemble_idx=i)
-                l_next_z += F.mse_loss(pzn, z_next_seq[:, t].detach()) / 5.0
+                err_z = F.mse_loss(pzn, z_next_seq[:, t].detach(), reduction='none').mean(dim=-1)
+                l_next_z += err_z.mean() / 5.0
+                if i == 0:
+                    batch_errors += err_z.detach()
 
             # Pred-Image: nobs für Step t (Indices: t, L+t, 2L+t, ...)
             # (Nutzt weiterhin Kopf 0 für das Bild-Rendering)
@@ -1351,10 +1378,16 @@ class IntegratedSystem:
             pred_img_t = self.decoder(pzn_main)
             nobs_t     = nobs_flat[range(t, B * L, L)]
             l_pred_img += combined_recon_loss(pred_img_t, nobs_t, ssim_weight=0.3)
+            # MSE-Anteil für PER (SSIM pro Element ist teuer)
+            batch_errors += F.mse_loss(pred_img_t, nobs_t, reduction='none').mean(dim=(1,2,3)).detach()
 
         l_goal   /= L
         l_next_z   /= L
         l_pred_img /= L
+        batch_errors /= L
+        
+        # T23: KL-Anteil zu batch_errors hinzufügen
+        batch_errors += kl_per_dim.reshape(B, L, -1).mean(dim=(1, 2)).detach()
 
         # T14: Reward-Prädiktor – eigene Stichprobe aus Gemini-Labels im Buffer
         dev = obs_flat.device
