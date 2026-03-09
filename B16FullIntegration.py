@@ -713,7 +713,7 @@ If the image barely changes across multiple calls (robot is stuck), say "free_dr
                         text = text[4:].strip()
                 result = json.loads(text)
                 result["source"] = "gemini_robotics"
-                result["raw_response"] = resp.text.strip()
+                result["raw_response"] = text
                 return result
             except Exception as e:
                 print(f"  Robotics-Gemini Fehler: {e}")

@@ -798,7 +798,7 @@ class Orchestrator:
                     print(f"             Empfehlung: {ass.get('recommendation','')}")
                     print(f"             Hint:       {ass.get('next_action_hint','')}")
                     if "raw_response" in ass:
-                        print(f"             Raw:        {ass['raw_response'][:200]}")
+                        print(f"             Raw:        {ass['raw_response']}")
                     gemini_event = ass
                     self._pending_gemini_event = ass
 
