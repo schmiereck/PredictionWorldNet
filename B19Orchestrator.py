@@ -815,6 +815,21 @@ class Orchestrator:
                             [0.0, 0.0, 0.0, -0.35, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 2
                         print(f"             → Override: TILT DOWN ({self._gemini_override_steps} Steps)")
+                    elif "camera_up" in hint:
+                        self._gemini_override_action = np.array(
+                            [0.0, 0.0, 0.0, 0.35, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 2
+                        print(f"             → Override: TILT UP ({self._gemini_override_steps} Steps)")
+                    elif "camera_left" in hint:
+                        self._gemini_override_action = np.array(
+                            [0.0, 0.0, -0.5, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 2
+                        print(f"             → Override: PAN LEFT ({self._gemini_override_steps} Steps)")
+                    elif "camera_right" in hint:
+                        self._gemini_override_action = np.array(
+                            [0.0, 0.0, 0.5, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 2
+                        print(f"             → Override: PAN RIGHT ({self._gemini_override_steps} Steps)")
             else:
                 gemini_event = None
 

@@ -83,7 +83,7 @@ Respond ONLY with valid JSON:
   "situation": "brief description of the situation",
   "recommendation": "specific recommendation for the next action",
   "obstacles": ["detected obstacles"],
-  "next_action_hint": "forward/left/right/stop/camera_down/camera_up/avoid_left/avoid_right",
+  "next_action_hint": "forward/backward/left/right/stop/camera_down/camera_up/camera_left/camera_right/avoid_left/avoid_right",
   "confidence": 0.0-1.0
 }
 

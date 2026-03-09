@@ -620,7 +620,7 @@ Antworte NUR mit JSON:
 {"reward": 0.0-1.0, "goal_progress": 0.0-1.0,
  "situation": "kurze Beschreibung was du siehst",
  "recommendation": "was der Roboter tun soll",
- "next_action_hint": "ONE OF: forward/left/right/stop/backward/camera_down/camera_up/avoid_left/avoid_right",
+ "next_action_hint": "ONE OF: forward/backward/left/right/stop/camera_down/camera_up/camera_left/camera_right/avoid_left/avoid_right",
  "training_label": "kurzes Label für diesen Zustand"}
 
 WICHTIGES VERHALTEN BEIM NÄHERKOMMEN:
