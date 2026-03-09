@@ -257,16 +257,15 @@ class MiniWorldObsSource(_b17.ObservationSource):
         """Rendert Bild mit simuliertem Kamera-Pan und Kamera-Tilt.
 
         Pan:  Dreht agent.dir temporär um den Pan-Winkel (horizontal).
-        Tilt: Setzt agent.cam_pitch temporär (vertikal, in Grad).
+        Tilt: Setzt agent.cam_pitch temporär (vertikal, in rad).
               Positiv = nach oben, negativ = nach unten.
         Beide Werte werden nach dem Rendern wiederhergestellt.
         """
-        import math
         agent = self._env.unwrapped.agent
         original_dir   = agent.dir
         original_pitch = agent.cam_pitch
         agent.dir       = original_dir - self._cam_pan          # positive pan = nach rechts
-        agent.cam_pitch = self._cam_tilt * 180.0 / math.pi     # rad → Grad
+        agent.cam_pitch = self._cam_tilt                        # MiniWorld expects radians
         obs = self._env.unwrapped.render_obs()
         agent.dir       = original_dir
         agent.cam_pitch = original_pitch
@@ -751,15 +750,11 @@ class Orchestrator:
             )
 
             # ── High-res für Gemini ─────────────────────
-            # WICHTIG: Original-Auflösung senden, nicht NN-Auflösung upscaled
+            # Nutze get_high_res() für alle Quellen (MiniWorld hochskaliert auf 256x256, Mock nativ 256x256).
+            # Das löst das Problem des falschen Seitenverhältnisses und der zu kleinen Darstellung im Dashboard.
             gemini_image = None
             if ml_result.get("gem_called"):
-                if isinstance(self.obs_source, MiniWorldObsSource) \
-                        and self.obs_source.is_miniworld:
-                    # MiniWorld: direkt Original-Frame (60×80) verwenden
-                    gemini_image = self.obs_source._obs
-                else:
-                    gemini_image = self.robot.get_high_res().image
+                gemini_image = self.robot.get_high_res().image
 
                 # Wand-Filter: einheitliche graue Fläche nicht an Gemini senden
                 # (Gemini sagt "unscharf", aber es ist eine Wand → nutzloser API-Call)
@@ -807,6 +802,11 @@ class Orchestrator:
                             [-0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 3
                         print(f"             → Backward-Override: BACK ({self._gemini_override_steps} Steps)")
+                    elif "camera_down" in hint:
+                        self._gemini_override_action = np.array(
+                            [0.0, 0.0, 0.0, -0.35, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 2
+                        print(f"             → Override: TILT DOWN ({self._gemini_override_steps} Steps)")
             else:
                 gemini_event = None
 

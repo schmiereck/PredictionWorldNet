@@ -1312,12 +1312,13 @@ class IntegratedSystem:
 
         B = len(seq_batch["goals"])
         L = SEQ_LEN
+        dev = next(self.encoder.parameters()).device
         batch_indices = seq_batch["indices"]
 
         # (B, L, H, W, 3) → (B*L, 3, H, W) für Encoder
-        obs_flat  = seq_batch["obs"].reshape(B * L, *OBS_SHAPE).permute(0, 3, 1, 2)
-        nobs_flat = seq_batch["next_obs"].reshape(B * L, *OBS_SHAPE).permute(0, 3, 1, 2)
-        act_seq   = seq_batch["actions"]   # (B, L, 6)
+        obs_flat  = seq_batch["obs"].reshape(B * L, *OBS_SHAPE).permute(0, 3, 1, 2).to(dev)
+        nobs_flat = seq_batch["next_obs"].reshape(B * L, *OBS_SHAPE).permute(0, 3, 1, 2).to(dev)
+        act_seq   = seq_batch["actions"].to(dev)   # (B, L, 6)
 
         # Alle Frames auf einmal encodieren
         mu_all, lv_all, z_all = self.encoder(obs_flat)
