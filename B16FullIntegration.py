@@ -1351,6 +1351,7 @@ class IntegratedSystem:
         l_goal = 0.0
         
         # T23: Fehler pro Sequenz sammeln für PER
+        dev = obs_flat.device
         batch_errors = torch.zeros(B, device=dev)
 
         for t in range(L):
@@ -1390,7 +1391,6 @@ class IntegratedSystem:
         batch_errors += kl_per_dim.reshape(B, L, -1).mean(dim=(1, 2)).detach()
 
         # T14: Reward-Prädiktor – eigene Stichprobe aus Gemini-Labels im Buffer
-        dev = obs_flat.device
         gem_n = min(self.replay.gemini_count, 8)
         if gem_n >= 2:
             rb = self.replay.sample(gem_n, require_gemini=True)
