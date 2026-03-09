@@ -592,11 +592,11 @@ class TrainingDashboard:
                     bbox=dict(boxstyle='round',
                               facecolor='#0d1b2a', alpha=0.8)
                 )
+                self.ax_gemini.legend(fontsize=6)
             self.ax_gemini.set_ylim(-0.05, 1.1)
             self.ax_gemini.set_title(
                 f'Gemini ER Calls ({len(self.gemini_events)} total)',
                 fontsize=9, color='white')
-            self.ax_gemini.legend(fontsize=6)
             self.ax_gemini.tick_params(colors='white')
 
             # ── Goal Progress + Sigma + Strategy Blend ─
