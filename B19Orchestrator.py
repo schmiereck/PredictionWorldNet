@@ -232,8 +232,13 @@ class MiniWorldObsSource(_b17.ObservationSource):
             obs, _    = self._env.reset()
             self._obs = obs
             self._available = True
+
+            # High-Res Framebuffer für Gemini (nativ gerendert, kein Upscale)
+            from miniworld.opengl import FrameBuffer as _FB
+            self._highres_fb = _FB(high_res[0], high_res[1], 8)
+
             print(f"  MiniWorld: {env_name}  ✓")
-            print(f"    Obs shape: {obs.shape}")
+            print(f"    Obs shape: {obs.shape}  |  High-Res FB: {high_res}")
         except ImportError:
             print(f"  MiniWorld nicht installiert → Mock-Fallback")
             print(f"    pip install miniworld gymnasium")
@@ -255,20 +260,21 @@ class MiniWorldObsSource(_b17.ObservationSource):
             h, w = size
             return img[::img.shape[0]//h, ::img.shape[1]//w, :][:h,:w,:]
 
-    def _render_with_pan(self):
+    def _render_with_pan(self, frame_buffer=None):
         """Rendert Bild mit simuliertem Kamera-Pan und Kamera-Tilt.
 
         Pan:  Dreht agent.dir temporär um den Pan-Winkel (horizontal).
-        Tilt: Setzt agent.cam_pitch temporär (vertikal, in rad).
+        Tilt: Setzt agent.cam_pitch temporär (vertikal, in Grad).
               Positiv = nach oben, negativ = nach unten.
         Beide Werte werden nach dem Rendern wiederhergestellt.
         """
+        import math
         agent = self._env.unwrapped.agent
         original_dir   = agent.dir
         original_pitch = agent.cam_pitch
         agent.dir       = original_dir - self._cam_pan          # positive pan = nach rechts
-        agent.cam_pitch = self._cam_tilt                        # MiniWorld expects radians
-        obs = self._env.unwrapped.render_obs()
+        agent.cam_pitch = self._cam_tilt * 180.0 / math.pi     # rad → Grad (MiniWorld erwartet Grad)
+        obs = self._env.unwrapped.render_obs(frame_buffer=frame_buffer)
         agent.dir       = original_dir
         agent.cam_pitch = original_pitch
         return obs
@@ -294,8 +300,8 @@ class MiniWorldObsSource(_b17.ObservationSource):
         if not self._available:
             return self._mock.get_high_res()
 
-        raw = self._render_with_pan()
-        img_high = self._resize(raw, self._high_res)
+        # Nativ in 256×256 rendern (eigener Framebuffer, kein Upscale)
+        img_high = self._render_with_pan(frame_buffer=self._highres_fb)
         return _b17.Observation(
             image=img_high.astype(np.uint8),
             timestamp=time.time(),
