@@ -83,14 +83,14 @@ Respond ONLY with valid JSON:
   "situation": "brief description of the situation",
   "recommendation": "specific recommendation for the next action",
   "obstacles": ["detected obstacles"],
-  "next_action_hint": "forward/backward/left/right/stop/camera_down/camera_up/camera_left/camera_right/avoid_left/avoid_right",
+  "next_action_hint": "forward/backward/left/right/stop/camera_down/camera_up/camera_left/camera_right/avoid_left/avoid_right/free_drive",
   "confidence": 0.0-1.0
 }
 
 IMPORTANT BEHAVIOR WHEN APPROACHING:
 Since objects are lower than the camera, they disappear at the bottom edge of the image when the robot gets very close!
 When a target object is close, the robot MUST tilt the camera down ("camera_down") to avoid losing sight of it.
-Pay close attention to objects at the bottom edge of the image, which are often only partially visible. 
+Pay close attention to objects at the bottom edge of the image, which are often only partially visible.
 In such cases, recommend driving back a bit and tilting the camera down so the target becomes fully visible again.
 The robot must then navigate around obstacles, even if the target temporarily leaves the field of view.
 
@@ -99,6 +99,7 @@ Evaluation Rules:
 - reward=0.8: Target close, camera_down recommended.
 - reward=0.6: Target clearly visible and centered, path is clear.
 - reward=0.1: Target not visible or blocked.
+- reward=0.02: Robot is stuck (image barely changes). Use "free_drive" to reverse and dodge sideways.
 """
 
 ROBOTICS_USER_TEMPLATE = """Current Goal: "{goal}"

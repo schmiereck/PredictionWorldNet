@@ -36,8 +36,7 @@ ACTION_DIM = 6:
     [linear_x, angular_z, camera_pan, camera_tilt,
      arc_radius, duration]
 
-Gemini-Modelle:
-    gemini-2.5-flash              → Text (B13)
+Gemini-Modell:
     gemini-robotics-er-1.5-preview → Vision (B15)
 """
 
@@ -606,36 +605,34 @@ class AdaptiveController:
 class GeminiClients:
     """Beide Gemini-Modelle in einer Klasse."""
 
-    TEXT_MODEL     = "gemini-2.5-flash"
     ROBOTICS_MODEL = "gemini-robotics-er-1.5-preview"
 
-    TEXT_SYSTEM = """Übersetze Roboter-Befehle in kurze englische CLIP-Phrasen.
-Antworte NUR mit JSON: {"primary_goal": "...", "confidence": 0.0-1.0}"""
+    ROBOTICS_SYSTEM = """You are the navigation assistant for a low-built hexapod robot.
+The robot has a camera at approx. 50cm height. Most target objects (boxes, balls) are lower than the camera.
+Your task: Guide the robot safely to the target, navigate around obstacles, AND keep the target in view.
 
-    ROBOTICS_SYSTEM = """Du bist der Navigations-Assistent eines niedrig gebauten Hexapod-Roboters.
-Der Roboter hat eine Kamera auf ca. 50cm Höhe. Die meisten Zielobjekte (Boxen, Bälle) sind flacher als die Kamera.
-Deine Aufgabe: Den Roboter sicher zum Ziel lotsen, an Hindernissen vorbeiführen UND das Ziel im Blick behalten.
-
-Antworte NUR mit JSON:
+Respond ONLY with JSON:
 {"reward": 0.0-1.0, "goal_progress": 0.0-1.0,
- "situation": "kurze Beschreibung was du siehst",
- "recommendation": "was der Roboter tun soll",
- "next_action_hint": "ONE OF: forward/backward/left/right/stop/camera_down/camera_up/camera_left/camera_right/avoid_left/avoid_right",
- "training_label": "kurzes Label für diesen Zustand"}
+ "situation": "brief description of what you see",
+ "recommendation": "what the robot should do",
+ "next_action_hint": "ONE OF: forward/backward/left/right/stop/camera_down/camera_up/camera_left/camera_right/avoid_left/avoid_right/free_drive",
+ "training_label": "short label for this state"}
 
-WICHTIGES VERHALTEN BEIM NÄHERKOMMEN:
-Da Objekte niedriger sind als die Kamera, verschwinden sie am unteren Bildrand, wenn der Roboter sehr nah kommt!
-Wenn ein Zielobjekt nah ist (nimmt viel Platz ein, wandert nach unten), MUSS der Roboter die Kamera nach unten neigen ("camera_down"), um es nicht aus den Augen zu verlieren.
+IMPORTANT APPROACHING BEHAVIOR:
+Since objects are lower than the camera, they disappear at the bottom edge of the image when the robot gets very close!
+When a target object is close (takes up lots of space, moves toward bottom), the robot MUST tilt the camera down ("camera_down") to keep it in view.
 
-Regeln für next_action_hint und reward:
-- "stop": Das Ziel-Objekt ist extrem nah und zentriert im Bild (Erfolg). reward=1.0.
-- "camera_down": Das Ziel ist nah, droht aber am unteren Bildrand zu verschwinden. reward=0.8.
-- "forward": Das Ziel ist gut sichtbar und mittig, der Weg ist frei. reward=0.6 bis 0.8.
-- "left"/"right": Das Ziel ist nur am Rand sichtbar oder gar nicht. Der Roboter soll suchen/drehen. reward=0.1 bis 0.3.
-- "avoid_left" / "avoid_right": Ein Objekt das NICHT das Ziel ist, blockiert den Weg. reward=0.1, training_label="hindernis".
-- "backward": Der Roboter steckt an einer Wand oder einem falschen Objekt fest (Bild ist komplett verdeckt). reward=0.05.
+Rules for next_action_hint and reward:
+- "stop": Target object is extremely close and centered in the image (success). reward=1.0.
+- "camera_down": Target is close but threatens to disappear at the bottom edge. reward=0.8.
+- "forward": Target is clearly visible and centered, path is clear. reward=0.6 to 0.8.
+- "left"/"right": Target is only visible at the edge or not at all. Robot should search/turn. reward=0.1 to 0.3.
+- "avoid_left" / "avoid_right": An object that is NOT the target is blocking the path. reward=0.1, training_label="obstacle".
+- "backward": Robot is stuck against a wall (image shows only wall). reward=0.05.
+- "free_drive": Robot is completely jammed or stuck on an object, image barely changes anymore. Will reverse and dodge sideways. reward=0.02, training_label="stuck".
 
-Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein großes, nahes Objekt siehst das NICHT das Ziel ist, sage IMMER "avoid" oder "backward"."""
+Important: The robot often gets stuck on wrong objects! If you see a large, close object that is NOT the target, ALWAYS say "avoid_left"/"avoid_right" or "free_drive".
+If the image barely changes across multiple calls (robot is stuck), say "free_drive"."""
 
     def __init__(self, api_key: str = None):
         self.mode = "mock"
@@ -648,7 +645,6 @@ Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein große
             try:
                 self.client = genai.Client(api_key=api_key)
                 self.mode   = "gemini"
-                print(f"  Text:    {self.TEXT_MODEL}")
                 print(f"  Vision:  {self.ROBOTICS_MODEL}")
             except Exception as e:
                 print(f"  Gemini Fehler: {e} – Mock-Modus")
@@ -656,29 +652,7 @@ Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein große
             print("  Gemini: Mock-Modus")
 
     def translate_goal(self, user_cmd: str) -> dict:
-        """Text: Benutzer-Befehl → CLIP-Phrase."""
-        if self.mode == "gemini":
-            try:
-                resp = self.client.models.generate_content(
-                    model=self.TEXT_MODEL,
-                    contents=user_cmd,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.TEXT_SYSTEM,
-                        temperature=0.1,
-                    )
-                )
-                text = resp.text.strip()
-                if "```" in text:
-                    text = text.split("```")[1].split("```")[0].strip()
-                    if text.startswith("json"):
-                        text = text[4:].strip()
-                result = json.loads(text)
-                result["source"] = "gemini_text"
-                return result
-            except Exception as e:
-                print(f"  Text-Gemini Fehler: {e}")
-
-        # Mock
+        """Text: Benutzer-Befehl → CLIP-Phrase (lokales Mapping, kein API-Call)."""
         cmd = user_cmd.lower()
         mapping = [
             (["rote box","red box"],      "find the red box",    0.95),
@@ -713,10 +687,12 @@ Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein große
                 else:
                     img_bytes = image_np.tobytes()
 
-                prompt = (f'Ziel: "{goal}"\n'
-                          f'Aktion: lx={action["linear_x"]:.2f} '
-                          f'az={action["angular_z"]:.2f}\n'
-                          f'Bewerte das Bild.')
+                prompt = (f'Goal: "{goal}"\n'
+                          f'Last action: linear_x={action["linear_x"]:.2f} '
+                          f'angular_z={action["angular_z"]:.2f} '
+                          f'cam_pan={action["camera_pan"]:.0f}° '
+                          f'cam_tilt={action["camera_tilt"]:.0f}°\n'
+                          f'Evaluate the camera image.')
 
                 resp = self.client.models.generate_content(
                     model=self.ROBOTICS_MODEL,
@@ -737,6 +713,7 @@ Wichtig: Der Roboter bleibt oft an falschen Objekten hängen! Wenn du ein große
                         text = text[4:].strip()
                 result = json.loads(text)
                 result["source"] = "gemini_robotics"
+                result["raw_response"] = resp.text.strip()
                 return result
             except Exception as e:
                 print(f"  Robotics-Gemini Fehler: {e}")
@@ -1902,9 +1879,6 @@ def run_demo():
             ax_gemini.clear(); ax_gemini.axis('off')
             gem_lines = [
                 "── Gemini-Modelle ───────",
-                "",
-                "TEXT (B13):",
-                f"  gemini-2.5-flash",
                 "",
                 "VISION (B15):",
                 f"  gemini-robotics",

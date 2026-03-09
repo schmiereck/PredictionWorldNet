@@ -446,6 +446,7 @@ class Orchestrator:
         # wird die Aktion für N Steps überschrieben.
         self._gemini_override_action = None   # np.ndarray oder None
         self._gemini_override_steps  = 0      # verbleibende Steps
+        self._gemini_override_queue  = []     # Sequenz [(action, steps), ...]
 
     def setup(self):
         """Erstellt alle Komponenten."""
@@ -701,8 +702,14 @@ class Orchestrator:
                 act_arr = self._gemini_override_action.copy()
                 self._gemini_override_steps -= 1
                 if self._gemini_override_steps == 0:
-                    self._gemini_override_action = None
-                    print(f"  [Step {step:4d}] Gemini Ausweich-Override beendet")
+                    # Nächste Phase aus Queue laden, falls vorhanden
+                    if self._gemini_override_queue:
+                        action, steps = self._gemini_override_queue.pop(0)
+                        self._gemini_override_action = action
+                        self._gemini_override_steps = steps
+                    else:
+                        self._gemini_override_action = None
+                        print(f"  [Step {step:4d}] Gemini Override beendet")
 
             elif mode == "miniworld" and self.strategy_exec is not None:
                 # Strategie-Aktion berechnen
@@ -789,6 +796,9 @@ class Orchestrator:
                     print(f"  [Step {step:4d}] Gemini ER: r={ass['reward']:.3f}")
                     print(f"             Situation:  {ass.get('situation','')}")
                     print(f"             Empfehlung: {ass.get('recommendation','')}")
+                    print(f"             Hint:       {ass.get('next_action_hint','')}")
+                    if "raw_response" in ass:
+                        print(f"             Raw:        {ass['raw_response'][:200]}")
                     gemini_event = ass
                     self._pending_gemini_event = ass
 
@@ -830,6 +840,18 @@ class Orchestrator:
                             [0.0, 0.0, 0.5, 0.0, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 2
                         print(f"             → Override: PAN RIGHT ({self._gemini_override_steps} Steps)")
+                    elif "free_drive" in hint:
+                        # Mehrstufig: 4 Steps rückwärts, dann 4 Steps scharf drehen
+                        turn_dir = 0.9 if np.random.rand() > 0.5 else -0.9
+                        self._gemini_override_action = np.array(
+                            [-0.6, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 4
+                        self._gemini_override_queue = [
+                            (np.array([0.2, turn_dir, 0.0, 0.0, 0.0, 0.0],
+                                      dtype=np.float32), 4),
+                        ]
+                        side = "L" if turn_dir > 0 else "R"
+                        print(f"             → FREE DRIVE: 4× zurück, 4× drehen {side}")
             else:
                 gemini_event = None
 
