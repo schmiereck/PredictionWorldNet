@@ -593,6 +593,11 @@ class AdaptiveController:
             self.calls    += 1
         return call
 
+    def reset_episode(self):
+        """Episode-Grenze: Timer zurücksetzen, damit nicht sofort gefeuert wird."""
+        self.last_call = self.total
+        self.fe_ema    = 0.2  # Neutral zurücksetzen
+
     @property
     def call_rate(self):
         return self.calls / max(1, self.total)
@@ -916,6 +921,7 @@ class IntegratedSystem:
         """T12: GRU-State zurücksetzen (Episode-Grenze)."""
         self.rssm.reset_state()
         self.prev_action = np.zeros(ACTION_DIM, dtype=np.float32)
+        self.adaptive.reset_episode()
 
     def set_goal(self, user_cmd: str):
         """Neues Ziel via Gemini Text-Interface (B13)."""
