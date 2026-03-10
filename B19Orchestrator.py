@@ -795,7 +795,7 @@ class Orchestrator:
                     )
                     print(f"  [Step {step:4d}] Gemini ER: r={ass['reward']:.3f}")
                     print(f"             Situation:  {ass.get('situation','')}")
-                    print(f"             Empfehlung: {ass.get('recommendation','')}")
+                    print(f"             Recommendation: {ass.get('recommendation','')}")
                     print(f"             Hint:       {ass.get('next_action_hint','')}")
                     if "raw_response" in ass:
                         print(f"             Raw:        {ass['raw_response']}")
@@ -854,6 +854,21 @@ class Orchestrator:
                         ]
                         side = "L" if turn_dir > 0 else "R"
                         print(f"             → FREE DRIVE: 4× zurück, 4× drehen {side}")
+                    elif "forward" in hint:
+                        self._gemini_override_action = np.array(
+                            [0.7, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 3
+                        print(f"             → Override: FORWARD ({self._gemini_override_steps} Steps)")
+                    elif "left" in hint and "camera" not in hint and "avoid" not in hint:
+                        self._gemini_override_action = np.array(
+                            [0.3, 0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 2
+                        print(f"             → Override: TURN LEFT ({self._gemini_override_steps} Steps)")
+                    elif "right" in hint and "camera" not in hint and "avoid" not in hint:
+                        self._gemini_override_action = np.array(
+                            [0.3, -0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 2
+                        print(f"             → Override: TURN RIGHT ({self._gemini_override_steps} Steps)")
             else:
                 gemini_event = None
 
