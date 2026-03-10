@@ -272,7 +272,11 @@ class MiniWorldObsSource(_b17.ObservationSource):
         agent = self._env.unwrapped.agent
         original_dir   = agent.dir
         original_pitch = agent.cam_pitch
-        agent.dir       = original_dir - self._cam_pan          # positive pan = nach rechts
+        
+        # MiniWorld: dir ist Winkel in rad (0 = +x, pi/2 = +z, pi = -x)
+        # Pan ist bei uns: >0 = rechts schauen, <0 = links schauen
+        # Wir addieren den Pan, damit sich die Blickrichtung verschiebt
+        agent.dir       = original_dir + self._cam_pan
         agent.cam_pitch = self._cam_tilt * 180.0 / math.pi     # rad → Grad (MiniWorld erwartet Grad)
         obs = self._env.unwrapped.render_obs(frame_buffer=frame_buffer)
         agent.dir       = original_dir
@@ -807,18 +811,17 @@ class Orchestrator:
                     # Gemini Ausweich-Override prüfen
                     hint = ass.get("next_action_hint", "").lower()
                     if "avoid_left" in hint:
-                        # Seitwärts + leicht vorwärts + nach links drehen
+                        # Hindernis ist links -> Weiche nach RECHTS aus
                         self._gemini_override_action = np.array(
-                            #[0.3, 0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                            [0.3, 1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 5
-                        print(f"             → Avoid-Override: LEFT ({self._gemini_override_steps} Steps)")
-                    elif "avoid_right" in hint:
-                        self._gemini_override_action = np.array(
-                            #[0.3, -0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
                             [0.3, -1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
                         self._gemini_override_steps = 5
-                        print(f"             → Avoid-Override: RIGHT ({self._gemini_override_steps} Steps)")
+                        print(f"             → Avoid-Override: AVOID LEFT (turn right) ({self._gemini_override_steps} Steps)")
+                    elif "avoid_right" in hint:
+                        # Hindernis ist rechts -> Weiche nach LINKS aus
+                        self._gemini_override_action = np.array(
+                            [0.3, 1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+                        self._gemini_override_steps = 5
+                        print(f"             → Avoid-Override: AVOID RIGHT (turn left) ({self._gemini_override_steps} Steps)")
                     elif "backward" in hint:
                         self._gemini_override_action = np.array(
                             [-0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
