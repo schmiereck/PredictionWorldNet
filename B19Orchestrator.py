@@ -508,8 +508,10 @@ class Orchestrator:
             },
             gemini=self.gemini,
         )
-        # Initiales Ziel setzen
-        self.ml_system.set_goal(f"find the {self._scene.replace('_',' ')}")
+        # Initiales Ziel setzen (Zufällig aus allen Objekten in der Szene)
+        import random
+        random_goal = random.choice(SCENE_TYPES)
+        self.ml_system.set_goal(f"find the {random_goal.replace('_',' ')}")
         print(f"  IntegratedSystem ✓  ({sum(p.numel() for p in self.ml_system.encoder.parameters()) + sum(p.numel() for p in self.ml_system.decoder.parameters()):,} Param.)")
         print()
 
@@ -853,7 +855,7 @@ class Orchestrator:
                                       dtype=np.float32), 4),
                         ]
                         side = "L" if turn_dir > 0 else "R"
-                        print(f"             → FREE DRIVE: 4× zurück, 4× drehen {side}")
+                        print(f"             → FREE DRIVE: 4× back, 4× turn {side}")
                     elif "forward" in hint:
                         self._gemini_override_action = np.array(
                             [0.7, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)

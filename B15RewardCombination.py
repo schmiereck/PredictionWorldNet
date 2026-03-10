@@ -266,16 +266,16 @@ class GeminiRoboticsInterface:
             situation = "Allgemeine Exploration"
             found     = False
 
-        # Empfehlung
+        # Recommendation
         if reward > 0.7:
-            rec  = "Ziel nah – weiter vorwärts"
-            hint = "vorwärts"
+            rec  = "Target close - continue forward"
+            hint = "forward"
         elif reward > 0.3:
-            rec  = "Ziel teilweise sichtbar – ausrichten"
-            hint = "kamera_pan"
+            rec  = "Target partially visible - adjust camera"
+            hint = "camera_down"
         else:
-            rec  = "Ziel nicht sichtbar – erkunden"
-            hint = "links" if np.random.rand() > 0.5 else "rechts"
+            rec  = "Target not visible - explore"
+            hint = "left" if np.random.rand() > 0.5 else "right"
 
         return {
             "reward":           reward,
@@ -605,7 +605,7 @@ def run_demo():
                     f"Situation:",
                     f"  {last_assessment.get('situation','')[:30]}",
                     "",
-                    f"Empfehlung:",
+                    f"Recommendation:",
                     f"  {last_assessment.get('recommendation','')[:30]}",
                     "",
                     f"Hint: {last_assessment.get('next_action_hint','')}",
