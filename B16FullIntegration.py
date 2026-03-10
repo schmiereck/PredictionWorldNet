@@ -1300,6 +1300,7 @@ class IntegratedSystem:
             "r_total":        r_total,
             "goal_prog":      goal_prog,
             "gem_called":     gem_called,
+            "api_call_requested": api_call_requested,
             "scene_pred":     scene_pred,       # T13: Szenen-Beschreibung aus z
             "pred_obs":       pred_obs.squeeze(0).permute(1,2,0).detach().numpy(),
             "pred_action":    pred_action.squeeze(0).detach().numpy(),
