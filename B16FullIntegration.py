@@ -1198,6 +1198,8 @@ class IntegratedSystem:
             }
             self.last_gemini_result = assessment
             self.adaptive.calls += 1 # Wir zählen dies als wertvolles Feedback
+            self.adaptive.last_call = self.adaptive.total # WICHTIG: Interval-Timer zurücksetzen!
+            self.adaptive.interval_hist.append(self.adaptive.min_interval)
         elif self.adaptive.should_call(fe=r_intr, novelty=novelty):
             action_dict = {
                 "linear_x":   float(action_np[0]),
