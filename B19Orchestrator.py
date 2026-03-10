@@ -206,9 +206,9 @@ class MiniWorldObsSource(_b17.ObservationSource):
         self._cam_pan        = 0.0    # Kamera-Pan aktuell in rad (-1.57 .. +1.57)
         self._cam_pan_target = 0.0    # Zielwinkel (Servo-Simulation)
         self._cam_tilt       = 0.0    # Kamera-Tilt (für spätere Nutzung)
-        # Servo-Geschwindigkeit: ~20°/Step (0.35 rad/Step)
-        # Entspricht einem physischen Pan-Tilt-Servo bei ~5 Hz Loop-Rate
         self._CAM_PAN_SPEED  = 0.35   # rad pro Step
+        self.episode_reset   = False
+        self._needs_reset    = False
 
         try:
             import gymnasium as gym
@@ -315,35 +315,33 @@ class MiniWorldObsSource(_b17.ObservationSource):
                       "cam_pan": self._cam_pan},
         )
 
-    def apply_action(self, action: _b17.Action):
+    def apply_action(self, action: _b17.Action, current_goal: str = ""):
         """
         Überträgt eine Aktion an MiniWorld.
-        MiniWorld verwendet diskrete Aktionen:
-            0: turn_left
-            1: turn_right
-            2: move_forward
-        Kamera-Pan wird intern gespeichert und beim Rendern angewendet.
         """
         if not self._available:
             return
+
+        if self._needs_reset:
+            obs, _ = self._env.reset()
+            self._obs = obs
+            self._cam_pan        = 0.0
+            self._cam_pan_target = 0.0
+            self._needs_reset    = False
+            self.episode_reset   = True
+        else:
+            self.episode_reset   = False
 
         ros2 = action.to_ros2()
         lx   = ros2["twist"]["linear"]["x"]
         az   = ros2["twist"]["angular"]["z"]
 
-        # Kamera-Pan: Servo-Simulation — Ziel setzen, schrittweise annähern
-        # ROS2: "pan to X°" ist ein Positions-Befehl, kein Geschwindigkeitsbefehl.
-        # Anstatt sofort zu springen bewegt sich _cam_pan pro Step um max _CAM_PAN_SPEED
-        # auf _cam_pan_target zu → kohärente Zwischenbilder, physikalisch korrekt.
         self._cam_pan_target = float(ros2["camera"]["pan"])
         delta = self._cam_pan_target - self._cam_pan
         step  = min(abs(delta), self._CAM_PAN_SPEED)
         self._cam_pan += step if delta >= 0 else -step
-        # ros2["camera"]["tilt"] ist bereits in Radians (aus Action._denorm)
-        # _render_with_pan() konvertiert rad→Grad für agent.cam_pitch
         self._cam_tilt = float(ros2["camera"]["tilt"])
 
-        # Kontinuierlich → diskret (Bewegung)
         if abs(az) > abs(lx):
             gym_action = 0 if az > 0 else 1   # links / rechts
         elif lx > 0.05:
@@ -352,16 +350,31 @@ class MiniWorldObsSource(_b17.ObservationSource):
             gym_action = 2                     # default: vorwärts
 
         obs, reward, terminated, truncated, info = self._env.step(gym_action)
-        # Nicht self._obs speichern – get_observation rendert mit Pan
         self._obs = obs
 
-        self.episode_reset = False
+        # Eigene Ziel-Erkennung mit Farbabgleich
+        agent_pos = self._env.unwrapped.agent.pos
+        self._terminal_reward = None
+        
+        for ent in self._env.unwrapped.entities:
+            dist = np.linalg.norm(agent_pos - ent.pos)
+            if dist < (self._env.unwrapped.agent.radius + ent.radius + 0.1): # 0.1m Toleranz
+                terminated = True
+                
+                # Zielabgleich: "find the red box" -> "red" und "box"
+                ent_type = ent.__class__.__name__.lower() # z.B. "box" oder "ball"
+                ent_color = getattr(ent, 'color', '').lower()
+                
+                if ent_color in current_goal and ent_type in current_goal:
+                    # Richtiges Objekt berührt! Harter Reward 1.0.
+                    self._terminal_reward = 1.0
+                else:
+                    # Falsches Objekt berührt! (Hindernis/Wand)
+                    self._terminal_reward = 0.05
+                break
+
         if terminated or truncated:
-            obs, _ = self._env.reset()
-            self._obs = obs
-            self._cam_pan        = 0.0    # Pan zurücksetzen bei Reset
-            self._cam_pan_target = 0.0
-            self.episode_reset   = True   # Orchestrator kann Trail löschen
+            self._needs_reset = True
 
     @property
     def obs_shape(self):
@@ -692,7 +705,18 @@ class Orchestrator:
                     self.ml_system.reset_hidden_state()
                     if self.overhead is not None:
                         self.overhead.clear_trail()
-                    print(f"  [Step {step:4d}] Episode-Reset → RSSM + Trail zurückgesetzt")
+                    
+                    import random
+                    random_goal = random.choice(SCENE_TYPES)
+                    result = self.ml_system.set_goal(f"find the {random_goal.replace('_',' ')}")
+                    self._goal = self.ml_system.current_goal
+                    
+                    # Strategie aktualisieren für das neue Ziel
+                    if self.strategy_gen is not None:
+                        strategy = self.strategy_gen.generate(result['primary_goal'])
+                        self.strategy_exec.set_strategy(strategy)
+
+                    print(f"  [Step {step:4d}] Episode-Reset → Neues Ziel: '{self._goal}'")
 
             # ── Aktion aus ML-System + Strategie ──────
             ml_result_pre = self.ml_system.step(
@@ -768,6 +792,7 @@ class Orchestrator:
                 action_np=act_arr,
                 next_obs_np=next_obs.image,
                 scene=self._scene,
+                terminal_reward=getattr(self.obs_source, '_terminal_reward', None)
             )
 
             # ── High-res für Gemini ─────────────────────

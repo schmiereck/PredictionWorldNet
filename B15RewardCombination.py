@@ -87,6 +87,11 @@ Respond ONLY with valid JSON:
   "confidence": 0.0-1.0
 }
 
+IMPORTANT COLOR RECOGNITION:
+There are multiple objects in the room (red box, yellow box, orange box, white box, green ball, blue ball).
+You MUST carefully check if the color of the object in front of you matches the current target exactly!
+If the target is "orange box", but you see a "red box", you must NOT give a high reward and MUST recommend to turn away ("left", "right" or "avoid").
+
 IMPORTANT BEHAVIOR WHEN APPROACHING:
 Since objects are lower than the camera, they disappear at the bottom edge of the image when the robot gets very close!
 When a target object is close, the robot MUST tilt the camera down ("camera_down") to avoid losing sight of it.
@@ -95,10 +100,10 @@ In such cases, recommend driving back a bit and tilting the camera down so the t
 The robot must then navigate around obstacles, even if the target temporarily leaves the field of view.
 
 Evaluation Rules:
-- reward=1.0: Target clearly visible, centered, and close (success).
+- reward=1.0: Target clearly visible, centered, and close AND exact color match (success).
 - reward=0.8: Target close, camera_down recommended.
 - reward=0.6: Target clearly visible and centered, path is clear.
-- reward=0.1: Target not visible or blocked.
+- reward=0.1: Target not visible, blocked, or WRONG COLOR object is in front.
 - reward=0.02: Robot is stuck (image barely changes). Use "free_drive" to reverse and dodge sideways.
 """
 

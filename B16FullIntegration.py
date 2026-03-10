@@ -618,16 +618,21 @@ Respond ONLY with JSON:
  "next_action_hint": "ONE OF: forward/backward/left/right/stop/camera_down/camera_up/camera_left/camera_right/avoid_left/avoid_right/free_drive",
  "training_label": "short label for this state"}
 
+IMPORTANT COLOR RECOGNITION:
+There are multiple objects in the room (red box, yellow box, orange box, white box, green ball, blue ball).
+You MUST carefully check if the color of the object in front of you matches the current target exactly!
+If the target is "orange box", but you see a "red box", you must NOT give a high reward and MUST recommend to turn away ("left", "right" or "avoid").
+
 IMPORTANT APPROACHING BEHAVIOR:
 Since objects are lower than the camera, they disappear at the bottom edge of the image when the robot gets very close!
 When a target object is close (takes up lots of space, moves toward bottom), the robot MUST tilt the camera down ("camera_down") to keep it in view.
 
 Rules for next_action_hint and reward:
-- "stop": Target object is extremely close and centered in the image (success). reward=1.0.
+- "stop": Target object is extremely close and centered in the image AND color matches exactly (success). reward=1.0.
 - "camera_down": Target is close but threatens to disappear at the bottom edge. reward=0.8.
 - "forward": Target is clearly visible and centered, path is clear. reward=0.6 to 0.8.
 - "left"/"right": Target is only visible at the edge or not at all. Robot should search/turn. reward=0.1 to 0.3.
-- "avoid_left" / "avoid_right": An object that is NOT the target is blocking the path. reward=0.1, training_label="obstacle".
+- "avoid_left" / "avoid_right": An object that is NOT the target (wrong color or wrong shape) is blocking the path. reward=0.1, training_label="obstacle".
 - "backward": Robot is stuck against a wall (image shows only wall). reward=0.05.
 - "free_drive": Robot is completely jammed or stuck on an object, image barely changes anymore. Will reverse and dodge sideways. reward=0.02, training_label="stuck".
 
@@ -1117,19 +1122,20 @@ class IntegratedSystem:
         }
 
     def step(self, obs_np: np.ndarray, action_np: np.ndarray,
-             next_obs_np: np.ndarray, scene: str):
+             next_obs_np: np.ndarray, scene: str, train: bool = True, terminal_reward: float = None):
         """
         Ein vollständiger Online-Learning Step.
         Returns: dict mit allen Metriken
         """
-        self.total_steps += 1
-        # Cosine Beta-Annealing: langsamer Start, beschleunigt, bremst am Ende
-        warmup = self.cfg["beta_warmup"]
-        if self.total_steps >= warmup:
-            self.beta = self.cfg["beta_max"]
-        else:
-            t = self.total_steps / warmup
-            self.beta = self.cfg["beta_max"] * 0.5 * (1.0 - np.cos(np.pi * t))
+        if train:
+            self.total_steps += 1
+            # Cosine Beta-Annealing: langsamer Start, beschleunigt, bremst am Ende
+            warmup = self.cfg["beta_warmup"]
+            if self.total_steps >= warmup:
+                self.beta = self.cfg["beta_max"]
+            else:
+                t = self.total_steps / warmup
+                self.beta = self.cfg["beta_max"] * 0.5 * (1.0 - np.cos(np.pi * t))
 
         # ── Forward Pass (Inference) ────────────────────────
         self.encoder.eval(); self.decoder.eval()
@@ -1176,7 +1182,23 @@ class IntegratedSystem:
         gem_called  = False
         gem_label   = ""
 
-        if self.adaptive.should_call(fe=r_intr, novelty=novelty):
+        if terminal_reward is not None:
+            gem_called = True
+            r_gemini   = float(terminal_reward)
+            goal_prog  = 1.0 if terminal_reward > 0.5 else 0.0
+            gem_label  = "success" if terminal_reward > 0.5 else "obstacle"
+            
+            assessment = {
+                "reward": r_gemini,
+                "goal_progress": goal_prog,
+                "situation": "Physical collision detected by environment.",
+                "recommendation": "Stop or start over.",
+                "next_action_hint": "stop" if terminal_reward > 0.5 else "avoid_right",
+                "training_label": gem_label,
+            }
+            self.last_gemini_result = assessment
+            self.adaptive.calls += 1 # Wir zählen dies als wertvolles Feedback
+        elif self.adaptive.should_call(fe=r_intr, novelty=novelty):
             action_dict = {
                 "linear_x":   float(action_np[0]),
                 "angular_z":  float(action_np[1]),
