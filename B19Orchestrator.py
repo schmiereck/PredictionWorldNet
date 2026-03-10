@@ -361,9 +361,10 @@ class MiniWorldObsSource(_b17.ObservationSource):
                 continue # Sich selbst ignorieren
                 
             dist = np.linalg.norm(agent_pos - ent.pos)
-            # Toleranz: 20% des kombinierten Radius
+            # Toleranz: base + forward_step (0.15m) damit der Physik-Stopp
+            # von MiniWorld abgedeckt wird (Agent wird bei base+step blockiert)
             base_dist = self._env.unwrapped.agent.radius + ent.radius
-            threshold = base_dist * 1.2
+            threshold = base_dist + 0.18
             if dist < threshold:
                 # Zielabgleich: "find the red box" -> "red" und "box"
                 ent_type = type(ent).__name__.lower() # z.B. "box" oder "ball"
