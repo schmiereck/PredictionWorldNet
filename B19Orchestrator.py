@@ -361,13 +361,29 @@ class MiniWorldObsSource(_b17.ObservationSource):
                 continue # Sich selbst ignorieren
                 
             dist = np.linalg.norm(agent_pos - ent.pos)
-            threshold = self._env.unwrapped.agent.radius + ent.radius + 0.1
-            if dist < threshold: # 0.1m Toleranz
+            # Erhöhe die Toleranz auf 0.3m. Manchmal blockiert MiniWorld den Roboter 
+            # durch die Bounding-Boxen etwas früher, bevor der Mittelpunkt-Abstand erreicht ist.
+            threshold = self._env.unwrapped.agent.radius + ent.radius + 0.3
+            if dist < threshold:
                 terminated = True
                 
                 # Zielabgleich: "find the red box" -> "red" und "box"
-                ent_type = ent.__class__.__name__.lower() # z.B. "box" oder "ball"
-                ent_color = getattr(ent, 'color', '').lower()
+                ent_type = type(ent).__name__.lower() # z.B. "box" oder "ball"
+                ent_color = "unknown"
+                
+                if hasattr(ent, 'color') and isinstance(ent.color, str):
+                    ent_color = ent.color.lower()
+                elif hasattr(ent, 'mesh'):
+                    # Farbe aus ObjMesh-Cache-Key extrahieren (z.B. "ball_green.obj")
+                    import os, re
+                    from miniworld.objmesh import ObjMesh
+                    for k, v in ObjMesh.cache.items():
+                        if v is ent.mesh:
+                            base = os.path.basename(k).lower()
+                            m_re = re.match(r'.*_([a-z]+)\.obj$', base)
+                            if m_re:
+                                ent_color = m_re.group(1)
+                            break
                 
                 if ent_color in current_goal and ent_type in current_goal:
                     # Richtiges Objekt berührt! Harter Reward 1.0.
