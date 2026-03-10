@@ -1122,7 +1122,8 @@ class IntegratedSystem:
         }
 
     def step(self, obs_np: np.ndarray, action_np: np.ndarray,
-             next_obs_np: np.ndarray, scene: str, train: bool = True, terminal_reward: float = None):
+             next_obs_np: np.ndarray, scene: str, train: bool = True,
+             terminal_reward: float = None, skip_api_call: bool = False):
         """
         Ein vollständiger Online-Learning Step.
         Returns: dict mit allen Metriken
@@ -1180,6 +1181,7 @@ class IntegratedSystem:
         r_gemini    = 0.3   # Fallback
         goal_prog   = 0.0
         gem_called  = False
+        api_call_requested = False
         gem_label   = ""
 
         if terminal_reward is not None:
@@ -1201,20 +1203,22 @@ class IntegratedSystem:
             self.adaptive.last_call = self.adaptive.total # WICHTIG: Interval-Timer zurücksetzen!
             self.adaptive.interval_hist.append(self.adaptive.min_interval)
         elif self.adaptive.should_call(fe=r_intr, novelty=novelty):
-            action_dict = {
-                "linear_x":   float(action_np[0]),
-                "angular_z":  float(action_np[1]),
-                "camera_pan": float((action_np[2]+1)/2*180-90),
-                "camera_tilt":float((action_np[3]+1)/2*90-45),
-            }
-            assessment = self.gemini.assess_image(
-                obs_np, self.current_goal, action_dict
-            )
-            r_gemini   = assessment["reward"]
-            goal_prog  = assessment["goal_progress"]
             gem_called = True
-            gem_label  = assessment.get("training_label", "")
-            self.last_gemini_result = assessment
+            api_call_requested = True
+            if not skip_api_call:
+                action_dict = {
+                    "linear_x":   float(action_np[0]),
+                    "angular_z":  float(action_np[1]),
+                    "camera_pan": float((action_np[2]+1)/2*180-90),
+                    "camera_tilt":float((action_np[3]+1)/2*90-45),
+                }
+                assessment = self.gemini.assess_image(
+                    obs_np, self.current_goal, action_dict
+                )
+                r_gemini   = assessment["reward"]
+                goal_prog  = assessment["goal_progress"]
+                gem_label  = assessment.get("training_label", "")
+                self.last_gemini_result = assessment
 
         # ── Replay Buffer ───────────────────────────────────
         self.replay.add(

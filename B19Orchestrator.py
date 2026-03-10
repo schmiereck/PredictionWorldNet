@@ -357,8 +357,12 @@ class MiniWorldObsSource(_b17.ObservationSource):
         self._terminal_reward = None
         
         for ent in self._env.unwrapped.entities:
+            if ent == self._env.unwrapped.agent:
+                continue # Sich selbst ignorieren
+                
             dist = np.linalg.norm(agent_pos - ent.pos)
-            if dist < (self._env.unwrapped.agent.radius + ent.radius + 0.1): # 0.1m Toleranz
+            threshold = self._env.unwrapped.agent.radius + ent.radius + 0.1
+            if dist < threshold: # 0.1m Toleranz
                 terminated = True
                 
                 # Zielabgleich: "find the red box" -> "red" und "box"
@@ -368,9 +372,11 @@ class MiniWorldObsSource(_b17.ObservationSource):
                 if ent_color in current_goal and ent_type in current_goal:
                     # Richtiges Objekt berührt! Harter Reward 1.0.
                     self._terminal_reward = 1.0
+                    print(f"  [Kollision] ZIEL ERREICHT! ({ent_color} {ent_type}, dist={dist:.2f} < {threshold:.2f})")
                 else:
                     # Falsches Objekt berührt! (Hindernis/Wand)
                     self._terminal_reward = 0.05
+                    print(f"  [Kollision] Falsches Objekt: {ent_color} {ent_type} (Ziel: {current_goal}, dist={dist:.2f} < {threshold:.2f})")
                 break
 
         if terminated or truncated:
@@ -781,7 +787,7 @@ class Orchestrator:
             # ── Robot Step ─────────────────────────────
             action_obj = Action.from_array(act_arr, source="policy")
             if isinstance(self.obs_source, MiniWorldObsSource):
-                self.obs_source.apply_action(action_obj)
+                self.obs_source.apply_action(action_obj, current_goal=self._goal)
             self.action_sink.send(action_obj)
 
             next_obs = self.robot.step(act_arr, source="policy")
@@ -792,14 +798,15 @@ class Orchestrator:
                 action_np=act_arr,
                 next_obs_np=next_obs.image,
                 scene=self._scene,
-                terminal_reward=getattr(self.obs_source, '_terminal_reward', None)
+                terminal_reward=getattr(self.obs_source, '_terminal_reward', None),
+                skip_api_call=True
             )
 
             # ── High-res für Gemini ─────────────────────
             # Nutze get_high_res() für alle Quellen (MiniWorld hochskaliert auf 256x256, Mock nativ 256x256).
             # Das löst das Problem des falschen Seitenverhältnisses und der zu kleinen Darstellung im Dashboard.
             gemini_image = None
-            if ml_result.get("gem_called"):
+            if ml_result.get("api_call_requested"):
                 gemini_image = self.robot.get_high_res().image
 
                 # Wand-Filter: einheitliche graue Fläche nicht an Gemini senden
