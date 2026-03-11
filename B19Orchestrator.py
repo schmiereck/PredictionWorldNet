@@ -285,6 +285,9 @@ class MiniWorldObsSource(_b17.ObservationSource):
             return
 
         if self._needs_reset:
+            if hasattr(self._env.unwrapped, "shadow_window"):
+                self._env.unwrapped.shadow_window.switch_to()
+                self._env.unwrapped.shadow_window.dispatch_events()
             obs, _ = self._env.reset()
             self._obs = obs
             self._cam_pan        = 0.0
