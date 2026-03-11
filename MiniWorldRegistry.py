@@ -101,3 +101,40 @@ def register_prediction_world_environments():
         entry_point=lambda **kw: PredictionWorldSingle(**kw),
         max_episode_steps=300,
     )
+
+def get_entity_color_name(ent) -> str | None:
+    """
+    Gibt den Farbnamen einer MiniWorld-Entity als String (z.B. 'red') zurück.
+    Wenn keine eindeutige Farbe erkannt wird, wird None zurückgegeben.
+    - Box: ent.color ist in der Regel ein String.
+    - Ball: Besitzt oft kein .color Attribut; extrahiert die Farbe stattdessen aus dem ObjMesh-Namen.
+    """
+    KNOWN_COLORS = ("red", "green", "blue", "yellow", "orange", "white", "grey", "purple", "black")
+    
+    # 1. Normale Entities (.color Attribut vorhanden und ist ein String)
+    if hasattr(ent, 'color') and isinstance(ent.color, str):
+        col = ent.color.lower()
+        if col in KNOWN_COLORS:
+            return col
+        return col
+
+    # 2. Besondere Entities wie Ball, bei denen die Farbe im Dateinamen des Meshes steckt (z.B. "ball_green.obj")
+    if hasattr(ent, 'mesh') and ent.mesh is not None:
+        try:
+            import os, re
+            from miniworld.objmesh import ObjMesh
+            for k, v in ObjMesh.cache.items():
+                if v is ent.mesh:
+                    base = os.path.basename(k).lower()
+                    m = re.match(r'.*_([a-z]+)\.obj$', base)
+                    if m:
+                        return m.group(1)
+                    break
+        except Exception:
+            pass
+            
+    return None
+
+def get_entity_type_name(ent) -> str:
+    """Gibt den Basis-Namen (Typ) einer Entity in Kleinbuchstaben zurück (z.B. 'box', 'ball')."""
+    return type(ent).__name__.lower()

@@ -327,25 +327,11 @@ class MiniWorldObsSource(_b17.ObservationSource):
             threshold = base_dist + 0.18
             if dist < threshold:
                 # Zielabgleich: "find the red box" -> "red" und "box"
-                ent_type = type(ent).__name__.lower() # z.B. "box" oder "ball"
-                ent_color = "unknown"
-                
-                if hasattr(ent, 'color') and isinstance(ent.color, str):
-                    ent_color = ent.color.lower()
-                elif hasattr(ent, 'mesh'):
-                    # Farbe aus ObjMesh-Cache-Key extrahieren (z.B. "ball_green.obj")
-                    import os, re
-                    from miniworld.objmesh import ObjMesh
-                    for k, v in ObjMesh.cache.items():
-                        if v is ent.mesh:
-                            base = os.path.basename(k).lower()
-                            m_re = re.match(r'.*_([a-z]+)\.obj$', base)
-                            if m_re:
-                                ent_color = m_re.group(1)
-                            break
-                
-                if ent_color in current_goal and ent_type in current_goal:
-                    # Richtiges Objekt → Episode beenden mit Erfolg
+                from MiniWorldRegistry import get_entity_color_name, get_entity_type_name
+                ent_type = get_entity_type_name(ent)
+                ent_color = get_entity_color_name(ent) or "unknown"
+
+                if ent_color in current_goal and ent_type in current_goal:                    # Richtiges Objekt → Episode beenden mit Erfolg
                     terminated = True
                     self._terminal_reward = 1.0
                     print(f"  [Kollision] ZIEL ERREICHT! ({ent_color} {ent_type}, dist={dist:.2f} < {threshold:.2f})")

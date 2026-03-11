@@ -239,32 +239,22 @@ class OverheadMapView:
                     "grey": "#666666", "purple": "#7025c2",
                     "orange": "#ff8000", "white": "#ffffff",
                 }
+                from MiniWorldRegistry import get_entity_color_name, get_entity_type_name
                 try:
-                    if hasattr(ent, 'color') and isinstance(ent.color, str):
-                        ent_color = _mw_colors.get(ent.color, ent_color)
-                    elif hasattr(ent, 'color') and hasattr(ent.color, '__len__') and len(ent.color) >= 3:
+                    color_name = get_entity_color_name(ent)
+                    if color_name:
+                        ent_color = _mw_colors.get(color_name, ent_color)
+                    elif hasattr(ent, 'color') and hasattr(ent.color, '__len__') and len(ent.color) >= 3 and not isinstance(ent.color, str):
                         c = ent.color
                         ent_color = '#{:02x}{:02x}{:02x}'.format(
                             int(c[0] * 255) if c[0] <= 1 else int(c[0]),
                             int(c[1] * 255) if c[1] <= 1 else int(c[1]),
                             int(c[2] * 255) if c[2] <= 1 else int(c[2]),
                         )
-                    if ent_color == '#ffffff' and hasattr(ent, 'mesh'):
-                        # Ball hat kein .color-Attribut.
-                        # Farbe aus ObjMesh-Cache-Key extrahieren: "ball_{color}.obj"
-                        import os, re
-                        from miniworld.objmesh import ObjMesh
-                        for k, v in ObjMesh.cache.items():
-                            if v is ent.mesh:
-                                base = os.path.basename(k).lower()
-                                m_re = re.match(r'ball_([a-z]+)\.obj$', base)
-                                if m_re:
-                                    ent_color = _mw_colors.get(m_re.group(1), ent_color)
-                                break
                 except Exception:
                     pass
                 # Marker nach Typ
-                name = type(ent).__name__.lower()
+                name = get_entity_type_name(ent)
                 if 'box' in name:
                     ent_marker = 's'
                 elif 'ball' in name:

@@ -149,31 +149,8 @@ _KNOWN_COLORS = ("red", "green", "blue", "yellow", "orange", "white")
 
 
 def _entity_color_name(ent) -> str | None:
-    """
-    Gibt den Farbnamen einer MiniWorld-Entity zurück.
-    Box: ent.color ist ein String → direkt lesen.
-    Ball: kein .color-Attribut → Farbe aus ObjMesh-Cache-Key extrahieren
-          (Dateiname: ball_{color}.obj).
-    """
-    # Box / Key / etc.: .color ist ein String
-    if hasattr(ent, 'color') and isinstance(ent.color, str):
-        return ent.color if ent.color in _KNOWN_COLORS else None
-
-    # Ball: Mesh-Dateiname enthält die Farbe als "ball_{color}.obj"
-    if hasattr(ent, 'mesh') and ent.mesh is not None:
-        try:
-            import os, re
-            from miniworld.objmesh import ObjMesh
-            for k, v in ObjMesh.cache.items():
-                if v is ent.mesh:
-                    base = os.path.basename(k).lower()   # z.B. "ball_green.obj"
-                    m = re.match(r'ball_([a-z]+)\.obj$', base)
-                    if m and m.group(1) in _KNOWN_COLORS:
-                        return m.group(1)
-                    break  # Mesh gefunden – kein weiterer Treffer möglich
-        except Exception:
-            pass
-    return None
+    from MiniWorldRegistry import get_entity_color_name
+    return get_entity_color_name(ent)
 
 
 def _entity_label(ent) -> str | None:
