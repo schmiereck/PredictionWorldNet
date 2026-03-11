@@ -517,7 +517,7 @@ class Orchestrator:
             trail_len = min(hist_len, 400)
             self.overhead = OverheadMapView(
                 map_size=30.0, trail_length=trail_len,
-                title=f"Draufsicht  |  {self.cfg['mode'].upper()}"
+                title=f"Overhead-Map  |  {self.cfg['mode'].upper()}"
             )
             self.overhead.setup()
             if isinstance(self.obs_source, MiniWorldObsSource) \

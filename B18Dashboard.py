@@ -110,7 +110,9 @@ class TrainingDashboard:
     def setup(self):
         """Erstellt das Dashboard-Fenster."""
         plt.ion()   # Interactive Mode – kein Blockieren
-        self.fig = plt.figure(figsize=(18, 11))
+        self.fig = plt.figure(figsize=(12, 9),
+                              num="Dashboard"
+        )
         try:
             tk_window = self.fig.canvas.manager.window
             tk_window.attributes('-topmost', False)
@@ -124,8 +126,10 @@ class TrainingDashboard:
             fontsize=14, fontweight='bold', color='white'
         )
 
+        # Ränder und Abstände optimieren
+        self.fig.subplots_adjust(left=0.03, right=0.97, top=0.92, bottom=0.05)
         gs = gridspec.GridSpec(3, 6, figure=self.fig,
-                               hspace=0.55, wspace=0.38)
+                               hspace=0.45, wspace=0.25)
 
         # ── Zeile 0: Bilder ───────────────────────────
         self.ax_obs   = self.fig.add_subplot(gs[0, 0])
@@ -359,7 +363,7 @@ class TrainingDashboard:
         self.ax_cam.add_patch(bar_bg)
         self.ax_cam.add_patch(bar_fg)
         self.ax_cam.text(
-            0.5, 0.22, f"Fortschritt: {prog*100:.0f}%  |  r={r:.2f}",
+            0.5, 0.22, f"Progress: {prog*100:.0f}%  |  r={r:.2f}",
             transform=self.ax_cam.transAxes,
             fontsize=7.5, ha='center', color=bar_color
         )
@@ -368,7 +372,7 @@ class TrainingDashboard:
             transform=self.ax_cam.transAxes,
             fontsize=7, ha='center', color='lightgray'
         )
-        self.ax_cam.set_title('Aktueller Auftrag',
+        self.ax_cam.set_title('Current goal',
                               fontsize=9, color='white')
 
         # Panel: Letztes Gemini-Bild (hochaufgeloest)
@@ -428,12 +432,12 @@ class TrainingDashboard:
                     )
                     desc = 'geradeaus'
                 self.ax_arc.set_title(
-                    f'Bewegung: {desc} / warte auf Gemini...',
+                    f'Movement: {desc} / waiting for Gemini...',
                     fontsize=8, color='gray'
                 )
             else:
                 self.ax_arc.set_title(
-                    'Letztes Gemini-Bild (noch kein Call)',
+                    'Last Gemini picture (no call yet)',
                     fontsize=8, color='gray'
                 )
             self.ax_arc.set_xlim(0, 1); self.ax_arc.set_ylim(0, 1)
@@ -489,7 +493,7 @@ class TrainingDashboard:
                                            linewidth=1, alpha=0.4)
 
             self.ax_fe.set_title(
-                'FE Zerlegung: Complexity (β·KL) + Inaccuracy (Recon+Pred)  |  Cyan=Gemini',
+                'FE Decomposition: Complexity (β·KL) + Inaccuracy (Recon+Pred)  |  Cyan=Gemini',
                 fontsize=8, color='white')
             if self.ax_fe.get_legend_handles_labels()[1]:
                 self.ax_fe.legend(fontsize=5.5, ncol=3)
@@ -668,9 +672,9 @@ class TrainingDashboard:
             # Pragmatic  ≈ r_reward_pred (hoher Reward = Ziel nah)
             efe_epist = sigma_now
             efe_prag  = r_pred_now
-            efe_label = ("ERKUNDEN" if efe_epist > efe_prag + 0.1
-                         else "ZIEL NÄHERN" if efe_prag > efe_epist + 0.1
-                         else "AUSGEWOGEN")
+            efe_label = ("EXPLORE" if efe_epist > efe_prag + 0.1
+                         else "CLOSER TO THE GOAL" if efe_prag > efe_epist + 0.1
+                         else "BALANCED")
             efe_color = ('cyan' if efe_epist > efe_prag + 0.1
                          else 'gold' if efe_prag > efe_epist + 0.1
                          else 'lightgreen')
@@ -679,7 +683,7 @@ class TrainingDashboard:
             strategy_lines = []
             if self._last_strategy_rule:
                 strategy_lines = [
-                    "", "── Strategie ────────────",
+                    "", "── Strategy ────────────",
                     f"Rule:  {self._last_strategy_rule[:28]}",
                     f"Blend: {blend_now:.2f}"
                     f"{'  (Strat)' if blend_now > 0.7 else '  (Mix)' if blend_now > 0.3 else '  (NN)'}",
@@ -696,7 +700,7 @@ class TrainingDashboard:
                     f"Beta:      {beta_now:.4f}",
                     f"LR:        {lr_now:.2e}",
                     "", "── T13/T14 ──────────────",
-                    f"Szene:     {self._last_scene_pred}",
+                    f"Scene:     {self._last_scene_pred}",
                     f"l_scene:   {l_scn_now:.5f}",
                     f"r_pred:    {r_pred_now:.4f}",
                     f"l_reward:  {l_rew_now:.5f}",
@@ -708,7 +712,7 @@ class TrainingDashboard:
                     "", "── Gemini ───────────────",
                     f"Calls:     {len(self.gemini_events)}",
                     f"Interval:  {gem_int:.0f} Steps",
-                    f"Ziel:      {goal[:22]}",
+                    f"Target:    {goal[:22]}",
                 ]),
                 transform=self.ax_stats.transAxes,
                 fontsize=6.2, verticalalignment='top',
@@ -750,20 +754,20 @@ class TrainingDashboard:
                 )
             self.ax_recog.invert_yaxis()
             self.ax_recog.set_title(
-                f'NN Erkennung  →  {lbls[0]}\n'
+                f'NN Recognition →  {lbls[0]}\n'
                 f'Scene-Head (T13): {self._last_scene_pred}',
                 fontsize=7.5, color='#44ee88', fontweight='bold'
             )
         else:
             self.ax_recog.text(
                 0.5, 0.5,
-                'Keine Label-Embeddings\n(B21 ausführen)',
+                'No Label-Embeddings\n(B21 execute)',
                 ha='center', va='center',
                 color='gray', fontsize=8,
                 transform=self.ax_recog.transAxes
             )
             self.ax_recog.set_title(
-                'NN Erkennung', fontsize=8, color='gray'
+                'NN Recognition', fontsize=8, color='gray'
             )
         self.ax_recog.tick_params(colors='white', labelsize=7)
         self.ax_recog.set_facecolor('#111111')
@@ -821,12 +825,12 @@ class TrainingDashboard:
             # Erste Initialisierung
             self.ax_obs.clear()
             self._im_obs = self.ax_obs.imshow(obs, interpolation='nearest')
-            self.ax_obs.set_title('Kamera NN (live)', fontsize=8, color='lime')
+            self.ax_obs.set_title('Camera NN (live)', fontsize=8, color='lime')
             self.ax_obs.axis('off')
 
             self.ax_pred.clear()
             self._im_pred = self.ax_pred.imshow(pred_disp, interpolation='nearest')
-            self.ax_pred.set_title(f'Vorhersage\nMSE={pe:.4f}',
+            self.ax_pred.set_title(f'Prediction\nMSE={pe:.4f}',
                                    fontsize=8, color='white')
             self.ax_pred.axis('off')
 
@@ -840,8 +844,8 @@ class TrainingDashboard:
             self._im_obs.set_data(obs)
             self._im_pred.set_data(pred_disp)
             self._im_diff.set_data(diff_amp)
-            self.ax_obs.set_title('Kamera NN (live)', fontsize=8, color='lime')
-            self.ax_pred.set_title(f'Vorhersage\nMSE={pe:.4f}',
+            self.ax_obs.set_title('Camera NN (live)', fontsize=8, color='lime')
+            self.ax_pred.set_title(f'Prediction\nMSE={pe:.4f}',
                                    fontsize=8, color='white')
 
         self.fig.canvas.draw_idle()
@@ -910,23 +914,23 @@ SCENE_ACTIONS = {
 
 GEMINI_MOCK_RESPONSES = {
     "red_box":    {"reward":0.9, "goal_progress":0.75,
-                   "situation":"Rote Box klar sichtbar",
-                   "recommendation":"Weiter vorwärts"},
+                   "situation":"red box visible",
+                   "recommendation":"continue driving forward"},
     "green_ball": {"reward":0.85,"goal_progress":0.65,
-                   "situation":"Grüner Ball sichtbar",
-                   "recommendation":"Langsam nähern"},
+                   "situation":"green ball visible",
+                   "recommendation":"continue driving forward"},
     "blue_ball":  {"reward":0.85,"goal_progress":0.65,
-                   "situation":"Blauer Ball zentriert",
-                   "recommendation":"Langsam nähern"},
+                   "situation":"blue ball visible",
+                   "recommendation":"continue driving forward"},
     "orange_box": {"reward":0.8, "goal_progress":0.6,
-                   "situation":"Orange Box sichtbar",
-                   "recommendation":"Weiter vorwärts"},
+                   "situation":"orange box visible",
+                   "recommendation":"continue driving forward"},
     "yellow_box": {"reward":0.8, "goal_progress":0.6,
-                   "situation":"Gelbe Box sichtbar",
-                   "recommendation":"Ausrichten"},
+                   "situation":"yellow box visible",
+                   "recommendation":"continue driving forward"},
     "white_box":  {"reward":0.7, "goal_progress":0.5,
-                   "situation":"Weiße Box sichtbar",
-                   "recommendation":"Nähern"},
+                   "situation":"white box visible",
+                   "recommendation":"continue driving forward"},
 }
 
 

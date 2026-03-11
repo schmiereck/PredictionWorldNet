@@ -111,7 +111,7 @@ class OverheadMapView:
 
     def __init__(self, map_size: float = 30.0,
                  trail_length: int = 300,
-                 title: str = "Draufsicht – Roboter-Karte"):
+                 title: str = "Overhead-Map"):
         self.map_size     = map_size
         self.initial_size = map_size
         self.title        = title
@@ -148,8 +148,8 @@ class OverheadMapView:
         """Öffnet das Karten-Fenster."""
         plt.ion()   # Interactive Mode
         self.fig = plt.figure(
-            figsize=(9, 8),
-            num="Draufsicht"
+            figsize=(7, 5),
+            num="Overhead-Map"
         )
         try:
             tk_window = self.fig.canvas.manager.window
@@ -371,8 +371,8 @@ class OverheadMapView:
         self.ax.set_xlim(cx - size/2, cx + size/2)
         self.ax.set_ylim(cy - size/2, cy + size/2)
         self.ax.set_aspect('equal')
-        title_mode = 'MiniWorld (echte Position)' if has_mw else 'Dead Reckoning'
-        self.ax.set_title(f'Draufsicht ({title_mode})',
+        title_mode = 'MiniWorld (real Position)' if has_mw else 'Dead Reckoning'
+        self.ax.set_title(f'Overhead-Map ({title_mode})',
                           fontsize=9, color='white')
         self.ax.tick_params(colors='gray', labelsize=7)
         self.ax.grid(True, color='#1a2a1a', linewidth=0.5)
@@ -503,7 +503,7 @@ class OverheadMapView:
                                label=s.replace('_',' '))
             )
         legend_handles.append(
-            mpatches.Patch(color='cyan', alpha=0.4, label='Kamera-FOV')
+            mpatches.Patch(color='cyan', alpha=0.4, label='Camera-FOV')
         )
         if self.gemini_pts:
             legend_handles.append(
@@ -526,7 +526,7 @@ class OverheadMapView:
                               linewidth=1.5)
             self.ax_dist.fill_between(range(len(dists)), dists,
                                       alpha=0.3, color='seagreen')
-        self.ax_dist.set_title('Distanz (m)', fontsize=8, color='white')
+        self.ax_dist.set_title('Distance (m)', fontsize=8, color='white')
         self.ax_dist.tick_params(colors='white', labelsize=6)
 
         # ── Rotation-Plot ──────────────────────────────
@@ -568,7 +568,7 @@ class OverheadMapView:
                              linestyle=':', alpha=0.3)
         self.ax_cam.set_ylim(-95, 95)
         self.ax_cam.set_title(
-            f'Kamera  Pan={pan_deg:+.0f}°  Tilt={tilt_deg:+.0f}°',
+            f'Camera Pan={pan_deg:+.0f}°  Tilt={tilt_deg:+.0f}°',
             fontsize=8, color='white')
         self.ax_cam.tick_params(colors='white', labelsize=6)
         self.ax_cam.set_ylabel('°', fontsize=7, color='white')
@@ -581,10 +581,10 @@ class OverheadMapView:
             f"Step: {self.step_count:4d}  |  "
             f"Pos: ({self.pose.x:+.2f}, {self.pose.y:+.2f})  |  "
             f"Heading: {(self.pose.heading*180/np.pi) % 360:.0f}°  |  "
-            f"Distanz: {self.total_dist:.2f}m  |  "
-            f"Kamera Pan={pan_deg:+.0f}° Tilt={tilt_deg:+.0f}°  |  "
+            f"Distanz: {self.total_dist:.2f}m  |  \n"
+            f"Camera Pan={pan_deg:+.0f}° Tilt={tilt_deg:+.0f}°  |  "
             f"Gemini-Calls: {len(self.gemini_pts)}  |  "
-            f"Szene: {scene}  |  "
+            f"Scene: {scene}  |  "
             f"r_gem: {self.last_reward:.2f}"
         )
         self.ax_info.text(
@@ -605,12 +605,12 @@ class OverheadMapView:
         self.gemini_pts.clear()
         self.cam_pan_hist.clear()
         self.cam_tilt_hist.clear()
-        print("[OverheadMap] Trail + Gemini-Calls + Kamera-Verlauf gelöscht")
+        print("[OverheadMap] Trail + Gemini-Calls + Camera history deleted")
 
     def close(self):
         try:
-            plt.figure("Draufsicht")
-            plt.close("Draufsicht")
+            plt.figure("Overhead-Map")
+            plt.close("Overhead-Map")
         except Exception:
             pass
 
@@ -632,7 +632,7 @@ def run_demo():
     N_STEPS = 300
 
     print("OverheadMapView – Demo")
-    print(f"  {N_STEPS} Steps, Dead Reckoning aus Mock-Aktionen")
+    print(f"  {N_STEPS} Steps, Dead Reckoning from Mock-Actions")
     print()
 
     overhead = OverheadMapView(map_size=30.0, trail_length=N_STEPS)
@@ -674,16 +674,16 @@ def run_demo():
 
         overhead.update(action_ros2, scene=scene, gemini_event=gemini_event)
 
-    print(f"\nDemo abgeschlossen!")
-    print(f"  Gesamtstrecke: {overhead.total_dist:.2f}m")
-    print(f"  Drehung total: {overhead.total_rot*180/np.pi:.0f}°")
-    print(f"  Gemini-Calls:  {len(overhead.gemini_pts)}")
+    print(f"\nDemo completed!")
+    print(f"  Total distance: {overhead.total_dist:.2f}m")
+    print(f"  Total rotation: {overhead.total_rot*180/np.pi:.0f}°")
+    print(f"  Gemini-Calls:   {len(overhead.gemini_pts)}")
     print()
-    print("Einbinden in B19:")
+    print("Integration into B19:")
     print("  from OverheadMapView import OverheadMapView")
     print("  overhead = OverheadMapView()")
     print("  overhead.setup()")
-    print("  # Im Loop:")
+    print("  # In Loop:")
     print("  overhead.update(action_sink.last_ros2, scene, gemini_event)")
 
     try:
