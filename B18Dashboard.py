@@ -723,7 +723,7 @@ class TrainingDashboard:
             self.ax_stats.text(
                 0.5, 0.01, f"EFE: {efe_label}",
                 transform=self.ax_stats.transAxes,
-                fontsize=7.5, ha='center', fontweight='bold',
+                fontsize=7.5, va='top', ha='center', fontweight='bold',
                 color=efe_color,
                 bbox=dict(boxstyle='round', facecolor='#0d0d0d', alpha=0.7)
             )
