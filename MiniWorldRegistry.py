@@ -50,6 +50,7 @@ def register_prediction_world_environments():
             # Kamera tiefer setzen (Hexapod-Perspektive)
             from B16FullIntegration import CAM_HEIGHT
             self.agent.cam_height = CAM_HEIGHT
+            self.params.set("cam_height", CAM_HEIGHT)
 
     gym.register(
         id=env_id_room,
@@ -68,6 +69,7 @@ def register_prediction_world_environments():
             self.place_agent()
             from B16FullIntegration import CAM_HEIGHT
             self.agent.cam_height = CAM_HEIGHT
+            self.params.set("cam_height", CAM_HEIGHT)
             
         def step(self, action):
             # Kein Zielobjekt → nur Basis-Step ohne near(self.box)-Check
@@ -95,6 +97,7 @@ def register_prediction_world_environments():
             self.place_agent()
             from B16FullIntegration import CAM_HEIGHT
             self.agent.cam_height = CAM_HEIGHT
+            self.params.set("cam_height", CAM_HEIGHT)
 
     gym.register(
         id=env_id_single,

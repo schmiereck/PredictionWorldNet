@@ -91,7 +91,7 @@ ACTION_BOUNDS = {
 LATENT_DIM  = 256   # T16: 64 → 256 (reicherer Zustandsraum)
 D_MODEL     = 256   # T16: 128 → 256 (=LATENT_DIM, damit context[:,:LATENT_DIM] passt)
 OBS_SHAPE   = (128, 128, 3)
-CAM_HEIGHT  = 0.5  # MiniWorld-Kamerahöhe (Standard=1.5, Hexapod-Perspektive=0.5)
+CAM_HEIGHT  = 1.0  # MiniWorld-Kamerahöhe (Standard=1.5, Hexapod-Perspektive=1.0)
 
 # T13: Szenen-Vokabular für den Beschreibungs-Kopf (scene_head)
 # Abbildung von Gemini-training_labels auf feste Klassen-Indizes.
