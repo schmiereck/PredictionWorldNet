@@ -195,7 +195,9 @@ class MiniWorldObsSource(_b17.ObservationSource):
 
             # High-Res Framebuffer für Gemini (nativ gerendert, kein Upscale)
             from miniworld.opengl import FrameBuffer as _FB
-            self._highres_fb = _FB(high_res[0], high_res[1], 8)
+            self._highres_fb = _FB(high_res[0], high_res[1])
+            # mit Kantenglättung:
+            #self._highres_fb = _FB(high_res[0], high_res[1], 8)
 
             print(f"  MiniWorld: {env_name}  ✓")
             print(f"    Obs shape: {obs.shape}  |  High-Res FB: {high_res}")
