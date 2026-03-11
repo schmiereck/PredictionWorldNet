@@ -128,48 +128,8 @@ matplotlib.use('TkAgg')
 
 def _register_prediction_world_env(gym):
     """Registriert PredictionWorld-OneRoom mit mehreren Objekten."""
-    env_id = "PredictionWorld-OneRoom-v0"
-    if env_id in gym.envs.registry:
-        return
-
-    from miniworld.envs.oneroom import OneRoom
-    from miniworld.entity import Box, Ball, COLORS, COLOR_NAMES
-
-    # Fehlende Farben nachtragen
-    if "orange" not in COLORS:
-        COLORS["orange"] = np.array([1.0, 0.5, 0.0])
-    if "white" not in COLORS:
-        COLORS["white"] = np.array([1.0, 1.0, 1.0])
-    for c in ("orange", "white"):
-        if c not in COLOR_NAMES:
-            COLOR_NAMES.append(c)
-
-    class PredictionWorldRoom(OneRoom):
-        """OneRoom mit mehreren farbigen Objekten."""
-
-        def _gen_world(self):
-            self.add_rect_room(min_x=0, max_x=self.size,
-                               min_z=0, max_z=self.size)
-            # Boxen
-            self.box        = self.place_entity(Box(color="red"))
-            self.box_yellow = self.place_entity(Box(color="yellow"))
-            self.box_white  = self.place_entity(Box(color="white"))
-            self.box_orange = self.place_entity(Box(color="orange"))
-
-            # Kugeln
-            self.ball_green = self.place_entity(Ball(color="green"))
-            self.ball_blue  = self.place_entity(Ball(color="blue"))
-
-            self.place_agent()
-            # Kamera tiefer setzen (Hexapod-Perspektive)
-            from B16FullIntegration import CAM_HEIGHT
-            self.agent.cam_height = CAM_HEIGHT
-
-    gym.register(
-        id=env_id,
-        entry_point=lambda **kw: PredictionWorldRoom(**kw),
-        max_episode_steps=300,
-    )
+    from MiniWorldRegistry import register_prediction_world_environments
+    register_prediction_world_environments()
 
 
 # ─────────────────────────────────────────────

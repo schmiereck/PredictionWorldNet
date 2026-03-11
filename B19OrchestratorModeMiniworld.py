@@ -62,38 +62,8 @@ def check_env(env_name: str) -> bool:
 
 def _register_pw_env(gym):
     """Registriert PredictionWorld-OneRoom-v0."""
-    env_id = "PredictionWorld-OneRoom-v0"
-    if env_id in gym.envs.registry:
-        return
-    import numpy as _np
-    from miniworld.envs.oneroom import OneRoom
-    from miniworld.entity import Box, Ball, COLORS, COLOR_NAMES
-    if "orange" not in COLORS:
-        COLORS["orange"] = _np.array([1.0, 0.5, 0.0])
-    if "white" not in COLORS:
-        COLORS["white"] = _np.array([1.0, 1.0, 1.0])
-    for c in ("orange", "white"):
-        if c not in COLOR_NAMES:
-            COLOR_NAMES.append(c)
-
-    class PredictionWorldRoom(OneRoom):
-        def _gen_world(self):
-            self.add_rect_room(min_x=0, max_x=self.size,
-                               min_z=0, max_z=self.size)
-            self.box = self.place_entity(Box(color="red"))
-            self.place_entity(Box(color="yellow"))
-            self.place_entity(Box(color="white"))
-            self.place_entity(Box(color="orange"))
-            self.place_entity(Ball(color="green"))
-            self.place_entity(Ball(color="blue"))
-            self.place_agent()
-            # Kamera tiefer setzen (Hexapod-Perspektive)
-            from B16FullIntegration import CAM_HEIGHT
-            self.agent.cam_height = CAM_HEIGHT
-
-    gym.register(id=env_id,
-                 entry_point=lambda **kw: PredictionWorldRoom(**kw),
-                 max_episode_steps=300)
+    from MiniWorldRegistry import register_prediction_world_environments
+    register_prediction_world_environments()
 
 
 # ─────────────────────────────────────────────
