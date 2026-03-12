@@ -29,6 +29,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import Normalize
+from matplotlib.widgets import TextBox
 from collections import deque
 
 
@@ -55,11 +56,14 @@ class TrainingDashboard:
         dash.close()
     """
 
-    def __init__(self, max_history: int = 500, title: str = "B18 Dashboard"):
+    def __init__(self, max_history: int = 500, title: str = "B18 Dashboard",
+                 initial_display_every: int = 8, on_display_every_changed=None):
         self.max_history = max_history
         self.title       = title
         self.fig         = None
         self._step       = 0
+        self._initial_display_every = initial_display_every
+        self._on_display_every_changed = on_display_every_changed
 
         # Ringpuffer für alle Metriken
         self.hist = {k: deque(maxlen=max_history) for k in [
@@ -166,7 +170,24 @@ class TrainingDashboard:
 
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
+
+        # Textbox für DISPLAY_EVERY
+        self._textbox_ax = self.fig.add_axes([0.84, 0.015, 0.05, 0.03])
+        self._textbox_ax.set_facecolor('#111111')
+        self._textbox = TextBox(self._textbox_ax, 'Update-Rate: ', initial=str(self._initial_display_every), color='#111111', hovercolor='#222222')
+        self._textbox.label.set_color('white')
+        self._textbox.on_submit(self._handle_display_every_submit)
+
         return self
+
+    def _handle_display_every_submit(self, text):
+        try:
+            val = int(text)
+            if val > 0:
+                if self._on_display_every_changed:
+                    self._on_display_every_changed(val)
+        except ValueError:
+            pass
 
     def update(
             self,

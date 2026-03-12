@@ -288,7 +288,7 @@ class OverheadMapView:
             return False
 
     def update(self, action_ros2: dict, scene: str = "",
-               gemini_event: dict = None):
+               gemini_event: dict = None, draw: bool = True):
         """
         Aktualisiert die Karte.
 

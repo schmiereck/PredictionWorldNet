@@ -511,7 +511,9 @@ class Orchestrator:
             max_history=hist_len,
             title=(f"B19 – Live Training  |  "
                    f"Modus: {self.cfg['mode'].upper()}  |  "
-                   f"Gemini: {'✓' if self.gemini.mode=='gemini' else 'Mock'}")
+                   f"Gemini: {'✓' if self.gemini.mode=='gemini' else 'Mock'}"),
+            initial_display_every=self.cfg.get("update_display", 8),
+            on_display_every_changed=lambda val: self.cfg.update({"update_display": val})
         )
         self.dashboard.setup()
         print("Dashboard (B18): ✓")
@@ -955,10 +957,12 @@ class Orchestrator:
 
             # ── Overhead Map Update (jeden Step) ────────
             if self.overhead is not None:
+                do_draw = (step % self.cfg["update_display"] == 0 or step == n-1)
                 self.overhead.update(
                     action_ros2=self.action_sink.last_ros2 or {},
                     scene=self._scene,
                     gemini_event=gemini_event,
+                    draw=do_draw
                 )
 
             obs = next_obs
