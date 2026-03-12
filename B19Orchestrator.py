@@ -395,7 +395,7 @@ class Orchestrator:
         "beta_warmup":       200,
         "min_gemini_interval": 8,
         "max_gemini_interval": 80,
-        "override_decay_steps": 0, # 0 = n_steps
+        "override_prob": 0.5, # 0.0=NN komplett frei, 1.0=Gemini-Overrides immer aktiv
     }
 
     def __init__(self, config: dict = None):
@@ -819,14 +819,11 @@ class Orchestrator:
                     # Gemini Ausweich-Override prüfen
                     hint = ass.get("next_action_hint", "").lower()
 
-                    # Override-Faktor (nimmt über Zeit ab)
-                    # Wenn override_decay_steps = 0, nutze n_steps (falls begrenzt), sonst 2000
-                    decay_cfg = self.cfg.get("override_decay_steps", 0)
-                    decay_steps = decay_cfg if decay_cfg > 0 else (n if n > 0 else 2000)
-                    override_prob = max(0.0, 1.0 - (step / max(1, decay_steps)))
+                    # Override-Wahrscheinlichkeit aus Config (0.0 = NN frei, 1.0 = Gemini aktiv)
+                    override_prob = self.cfg.get("override_prob", 0.5)
                     
                     if hint and np.random.rand() > override_prob:
-                        print(f"             → Override ignoriert (Decay-Prob={override_prob:.2f})")
+                        print(f"             → Override ignoriert (Prob={override_prob:.2f})")
                         hint = ""  # Hint verwerfen
 
                     if "avoid_left" in hint:
