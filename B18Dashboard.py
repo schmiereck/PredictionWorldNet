@@ -57,13 +57,16 @@ class TrainingDashboard:
     """
 
     def __init__(self, max_history: int = 500, title: str = "B18 Dashboard",
-                 initial_display_every: int = 8, on_display_every_changed=None):
+                 initial_display_every: int = 8, on_display_every_changed=None,
+                 initial_display_every_live: int = 1, on_display_every_live_changed=None):
         self.max_history = max_history
         self.title       = title
         self.fig         = None
         self._step       = 0
         self._initial_display_every = initial_display_every
         self._on_display_every_changed = on_display_every_changed
+        self._initial_display_every_live = initial_display_every_live
+        self._on_display_every_live_changed = on_display_every_live_changed
 
         # Ringpuffer für alle Metriken
         self.hist = {k: deque(maxlen=max_history) for k in [
@@ -172,11 +175,24 @@ class TrainingDashboard:
         self.fig.canvas.flush_events()
 
         # Textbox für DISPLAY_EVERY
-        self._textbox_ax = self.fig.add_axes([0.84, 0.015, 0.05, 0.03])
-        self._textbox_ax.set_facecolor('#111111')
-        self._textbox = TextBox(self._textbox_ax, 'Update-Rate: ', initial=str(self._initial_display_every), color='#111111', hovercolor='#222222')
+        self._textbox_ax = self.fig.add_axes([0.84, 0.015, 0.06, 0.03])
+        self._textbox_ax.set_facecolor('#222222')
+        self._textbox = TextBox(self._textbox_ax, 'Update-Rate: ', initial=str(self._initial_display_every), color='#222222', hovercolor='#333333')
         self._textbox.label.set_color('white')
+        self._textbox.text_disp.set_color('white')
+        if hasattr(self._textbox, 'cursor'):
+            self._textbox.cursor.set_color('white')
         self._textbox.on_submit(self._handle_display_every_submit)
+
+        # Textbox für DISPLAY_EVERY_LIVE (Video Stream)
+        self._textbox_live_ax = self.fig.add_axes([0.70, 0.015, 0.06, 0.03])
+        self._textbox_live_ax.set_facecolor('#222222')
+        self._textbox_live = TextBox(self._textbox_live_ax, 'Live-Rate: ', initial=str(self._initial_display_every_live), color='#222222', hovercolor='#333333')
+        self._textbox_live.label.set_color('white')
+        self._textbox_live.text_disp.set_color('white')
+        if hasattr(self._textbox_live, 'cursor'):
+            self._textbox_live.cursor.set_color('white')
+        self._textbox_live.on_submit(self._handle_display_every_live_submit)
 
         return self
 
@@ -188,6 +204,20 @@ class TrainingDashboard:
                     self._on_display_every_changed(val)
         except ValueError:
             pass
+
+    def _handle_display_every_live_submit(self, text):
+        try:
+            val = int(text)
+            if val > 0:
+                if self._on_display_every_live_changed:
+                    self._on_display_every_live_changed(val)
+        except ValueError:
+            pass
+
+    def process_events(self):
+        """Verarbeitet UI-Events (wie Texteingaben), ohne neu zu zeichnen."""
+        if self.fig is not None:
+            self.fig.canvas.flush_events()
 
     def update(
             self,
@@ -203,6 +233,7 @@ class TrainingDashboard:
             topdown:             np.ndarray = None,    # (H,W,3) Top-Down Karte optional
             gemini_hires:        np.ndarray = None,    # (H,W,3) letztes Bild an Gemini
             recognition_scores:  dict       = None,    # {label: float [0,1]}
+            step:                int        = None,
     ):
         """
         Aktualisiert das Dashboard (volle Metriken).
@@ -212,7 +243,11 @@ class TrainingDashboard:
             Schnell (jeden Aufruf):  Kamerabild, Vorhersage, Differenz, Auftrag
             Langsam (alle 10 Aufrufe): Loss-Kurven, Rewards, Latent-Space, Gemini-Timeline
         """
-        self._step  += 1
+        if step is not None:
+            self._step = step
+        else:
+            self._step += 1
+
         self._last_obs  = obs
         self._last_pred = pred
         self._last_goal = goal
@@ -1096,6 +1131,7 @@ def run_demo():
                 goal=SCENE_GOALS[scene],
                 action_norm=act,
                 sigma=sigma,
+                step=step,
             )
 
     print("\nDashboard Demo abgeschlossen!")

@@ -385,6 +385,8 @@ class Orchestrator:
         "n_steps":           500,
         "scene_switch":      40,
         "update_display":    8,
+        "update_display_live": 1,
+        "update_display_overhead": 8,
         "miniworld_env":     "PredictionWorld-OneRoom-v0",
         "buffer_size":       1000,
         "batch_size":        16,
@@ -393,6 +395,7 @@ class Orchestrator:
         "beta_warmup":       200,
         "min_gemini_interval": 8,
         "max_gemini_interval": 80,
+        "override_decay_steps": 0, # 0 = n_steps
     }
 
     def __init__(self, config: dict = None):
@@ -513,7 +516,9 @@ class Orchestrator:
                    f"Modus: {self.cfg['mode'].upper()}  |  "
                    f"Gemini: {'✓' if self.gemini.mode=='gemini' else 'Mock'}"),
             initial_display_every=self.cfg.get("update_display", 8),
-            on_display_every_changed=lambda val: self.cfg.update({"update_display": val})
+            on_display_every_changed=lambda val: self.cfg.update({"update_display": val}),
+            initial_display_every_live=self.cfg.get("update_display_live", 1),
+            on_display_every_live_changed=lambda val: self.cfg.update({"update_display_live": val})
         )
         self.dashboard.setup()
         print("Dashboard (B18): ✓")
@@ -524,7 +529,9 @@ class Orchestrator:
             trail_len = min(hist_len, 400)
             self.overhead = OverheadMapView(
                 map_size=30.0, trail_length=trail_len,
-                title=f"Overhead-Map  |  {self.cfg['mode'].upper()}"
+                title=f"Overhead-Map  |  {self.cfg['mode'].upper()}",
+                initial_display_every=self.cfg.get("update_display_overhead", 8),
+                on_display_every_changed=lambda val: self.cfg.update({"update_display_overhead": val})
             )
             self.overhead.setup()
             if isinstance(self.obs_source, MiniWorldObsSource) \
@@ -811,6 +818,17 @@ class Orchestrator:
 
                     # Gemini Ausweich-Override prüfen
                     hint = ass.get("next_action_hint", "").lower()
+
+                    # Override-Faktor (nimmt über Zeit ab)
+                    # Wenn override_decay_steps = 0, nutze n_steps (falls begrenzt), sonst 2000
+                    decay_cfg = self.cfg.get("override_decay_steps", 0)
+                    decay_steps = decay_cfg if decay_cfg > 0 else (n if n > 0 else 2000)
+                    override_prob = max(0.0, 1.0 - (step / max(1, decay_steps)))
+                    
+                    if hint and np.random.rand() > override_prob:
+                        print(f"             → Override ignoriert (Decay-Prob={override_prob:.2f})")
+                        hint = ""  # Hint verwerfen
+
                     if "avoid_left" in hint:
                         # Hindernis ist links -> Weiche nach RECHTS aus
                         self._gemini_override_action = np.array(
@@ -881,9 +899,17 @@ class Orchestrator:
             # ── Live-Update: Kamera-Bilder jeden Step ──────
             # NN-Auflösung (128×128) – das was das NN sieht
             live_obs = obs.image  # bereits 128×128 vom ML-System
-            self.dashboard.update_live(live_obs, ml_result["pred_obs"])
+
+            # Event-Verarbeitung für reaktionsfähige UI auch bei seltenen Updates
+            self.dashboard.process_events()
+            if self.overhead is not None:
+                self.overhead.process_events()
 
             # ── Dashboard Update (B18) – volle Metriken ────
+            if (step % self.cfg.get("update_display_live", 1) == 0 or
+                    step == n-1):
+                self.dashboard.update_live(live_obs, ml_result["pred_obs"])
+
             if (step % self.cfg["update_display"] == 0 or
                     step == n-1):
 
@@ -953,11 +979,12 @@ class Orchestrator:
                     topdown=topdown,
                     gemini_hires=self._last_gemini_image,
                     recognition_scores=recognition_scores,
+                    step=step,
                 )
 
             # ── Overhead Map Update (jeden Step) ────────
             if self.overhead is not None:
-                do_draw = (step % self.cfg["update_display"] == 0 or step == n-1)
+                do_draw = (step % self.cfg.get("update_display_overhead", 8) == 0 or step == n-1)
                 self.overhead.update(
                     action_ros2=self.action_sink.last_ros2 or {},
                     scene=self._scene,

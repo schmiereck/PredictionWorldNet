@@ -36,6 +36,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyArrowPatch, Wedge
+from matplotlib.widgets import TextBox
 from collections import deque
 import time
 
@@ -111,7 +112,9 @@ class OverheadMapView:
 
     def __init__(self, map_size: float = 30.0,
                  trail_length: int = 300,
-                 title: str = "Overhead-Map"):
+                 title: str = "Overhead-Map",
+                 initial_display_every: int = 8,
+                 on_display_every_changed=None):
         self.map_size     = map_size
         self.initial_size = map_size
         self.title        = title
@@ -122,6 +125,9 @@ class OverheadMapView:
         self.fig          = None
         self.ax           = None
         self.ax_info      = None
+
+        self._initial_display_every = initial_display_every
+        self._on_display_every_changed = on_display_every_changed
 
         # Statistiken
         self.total_dist   = 0.0
@@ -177,9 +183,34 @@ class OverheadMapView:
             ax.tick_params(colors='white')
 
         self.ax_info.axis('off')
+
+        # Textbox für DISPLAY_EVERY
+        self._textbox_ax = self.fig.add_axes([0.84, 0.015, 0.06, 0.03])
+        self._textbox_ax.set_facecolor('#222222')
+        self._textbox = TextBox(self._textbox_ax, 'Update-Rate: ', initial=str(self._initial_display_every), color='#222222', hovercolor='#333333')
+        self._textbox.label.set_color('white')
+        self._textbox.text_disp.set_color('white')
+        if hasattr(self._textbox, 'cursor'):
+            self._textbox.cursor.set_color('white')
+        self._textbox.on_submit(self._handle_display_every_submit)
+
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
         return self
+
+    def _handle_display_every_submit(self, text):
+        try:
+            val = int(text)
+            if val > 0:
+                if self._on_display_every_changed:
+                    self._on_display_every_changed(val)
+        except ValueError:
+            pass
+
+    def process_events(self):
+        """Verarbeitet UI-Events, ohne neu zu zeichnen."""
+        if self.fig is not None:
+            self.fig.canvas.flush_events()
 
     def set_miniworld_env(self, env):
         """
@@ -345,6 +376,9 @@ class OverheadMapView:
             })
 
         # ── Map zeichnen ───────────────────────────────
+        if not draw:
+            return
+
         self.ax.clear()
         self.ax.set_facecolor('#0a0f1a')
 
