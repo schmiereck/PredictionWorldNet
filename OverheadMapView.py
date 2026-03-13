@@ -207,10 +207,25 @@ class OverheadMapView:
         except ValueError:
             pass
 
+    def is_minimized(self) -> bool:
+        if self.fig is None:
+            return False
+        try:
+            # winfo_ismapped() liefert 0, wenn das Fenster unter Windows minimiert ist.
+            return getattr(self.fig.canvas.manager.window, "winfo_ismapped", lambda: 1)() == 0
+        except Exception:
+            return False
+
     def process_events(self):
         """Verarbeitet UI-Events, ohne neu zu zeichnen."""
         if self.fig is not None:
-            self.fig.canvas.flush_events()
+            try:
+                self.fig.canvas.flush_events()
+            except Exception:
+                pass
+            if self.is_minimized():
+                import time
+                time.sleep(0.02)  # Entlastet die CPU, wenn das Fenster minimiert ist
 
     def set_miniworld_env(self, env):
         """
@@ -377,6 +392,11 @@ class OverheadMapView:
 
         # ── Map zeichnen ───────────────────────────────
         if not draw:
+            return
+
+        # Neu: Überspringe Rendering, wenn Fenster minimiert ist (verhindert Einfrieren)
+        if self.is_minimized():
+            self.process_events()
             return
 
         self.ax.clear()

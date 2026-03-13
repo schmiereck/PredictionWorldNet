@@ -214,10 +214,26 @@ class TrainingDashboard:
         except ValueError:
             pass
 
+    def is_minimized(self) -> bool:
+        if self.fig is None:
+            return False
+        try:
+            # winfo_ismapped() liefert 0, wenn das Fenster unter Windows minimiert ist.
+            # state() liefert bei TkAgg manchmal faelschlicherweise 'normal'.
+            return getattr(self.fig.canvas.manager.window, "winfo_ismapped", lambda: 1)() == 0
+        except Exception:
+            return False
+
     def process_events(self):
         """Verarbeitet UI-Events (wie Texteingaben), ohne neu zu zeichnen."""
         if self.fig is not None:
-            self.fig.canvas.flush_events()
+            try:
+                self.fig.canvas.flush_events()
+            except Exception:
+                pass
+            if self.is_minimized():
+                import time
+                time.sleep(0.02)  # Entlastet die CPU, wenn das Fenster minimiert ist
 
     def update(
             self,
@@ -324,6 +340,11 @@ class TrainingDashboard:
             self.latent_labels.append(lbl)
 
         steps_x = list(range(len(self.hist["fe"])))
+
+        # Neu: Überspringe Rendering, wenn Fenster minimiert ist (verhindert Einfrieren)
+        if self.is_minimized():
+            self.process_events()
+            return
 
         # ── Panel: Aktuelles Bild (16×16 NN-Input) ────
         # obs wird hier NICHT angezeigt – update_live() macht das
@@ -855,6 +876,11 @@ class TrainingDashboard:
 
         self._last_obs  = obs
         self._last_pred = pred
+
+        # Neu: Überspringe Rendering, wenn Fenster minimiert ist (verhindert Einfrieren)
+        if self.is_minimized():
+            self.process_events()
+            return
 
         # Prediction skalieren falls nötig
         obs_h, obs_w = obs.shape[:2]
