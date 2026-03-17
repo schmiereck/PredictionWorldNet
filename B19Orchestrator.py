@@ -307,10 +307,13 @@ class MiniWorldObsSource(_b17.ObservationSource):
         self._cam_pan += step if delta >= 0 else -step
         self._cam_tilt = float(ros2["camera"]["tilt"])
 
-        if abs(az) > abs(lx):
+        # MiniWorld: Diskrete Aktionen (0=links, 1=rechts, 2=vorwärts).
+        # Vorwärts-Bias: Nur bei deutlich stärkerer Drehung als Vorwärts wird gedreht.
+        # Sonst wird vorwärts bevorzugt, damit der Agent den Raum erkundet.
+        if lx > 0.05 and abs(az) < 2.0 * abs(lx):
+            gym_action = 2                     # vorwärts (Vorrang)
+        elif abs(az) > 0.05:
             gym_action = 0 if az > 0 else 1   # links / rechts
-        elif lx > 0.05:
-            gym_action = 2                     # vorwärts
         else:
             gym_action = 2                     # default: vorwärts
 
@@ -341,8 +344,8 @@ class MiniWorldObsSource(_b17.ObservationSource):
                     self._terminal_reward = 1.0
                     print(f"  [Kollision] ZIEL ERREICHT! ({ent_color} {ent_type}, dist={dist:.2f} < {threshold:.2f})")
                 else:
-                    # Falsches Objekt → Strafe, aber Episode läuft weiter
-                    self._terminal_reward = 0.05
+                    # Falsches Objekt → echte Strafe, Episode läuft weiter
+                    self._terminal_reward = -0.5
                     print(f"  [Kollision] Falsches Objekt: {ent_color} {ent_type} (Ziel: {current_goal}, dist={dist:.2f} < {threshold:.2f})")
                 break
 
@@ -700,14 +703,28 @@ class Orchestrator:
 
                     print(f"  [Step {step:4d}] Episode-Reset → Neues Ziel: '{self._goal}'")
 
-            # ── Aktion aus ML-System + Strategie ──────
-            ml_result_pre = self.ml_system.step(
-                obs_np=obs.image,
-                action_np=np.zeros(6, dtype=np.float32),  # Dummy für Vorhersage
-                next_obs_np=obs.image,
-                scene=self._scene,
-                train=False,  # Nur Vorhersage, kein Training
-            ) if False else None  # Vorhersage kommt nach dem Step
+            # ── T26: Aktion aus ML-System (NN) + Strategie ──────
+            # NN-Inference: predict_action() liefert μ, σ und gesampelte Aktion
+            nn_pred = self.ml_system.predict_action(obs.image)
+            nn_sampled = nn_pred["sampled_action"]  # N(μ, σ²) mit Exploration-Decay
+            nn_sigma_mean = float(nn_pred["sigma"].mean())
+
+            # T26: Warmup-Blend — Phasenmuster als Basis, NN übernimmt graduell
+            # Erste 2000 Steps: hauptsächlich Phasenmuster (Agent erkundet den Raum)
+            # Danach: NN übernimmt schrittweise (über weitere 3000 Steps)
+            NN_WARMUP_START = 2000   # Ab hier beginnt NN-Übernahme
+            NN_WARMUP_END   = 5000   # Ab hier ist NN komplett aktiv
+            ts = self.ml_system.total_steps
+            if ts < NN_WARMUP_START:
+                nn_blend = 0.0       # Rein Phasenmuster
+            elif ts < NN_WARMUP_END:
+                nn_blend = (ts - NN_WARMUP_START) / (NN_WARMUP_END - NN_WARMUP_START)
+            else:
+                nn_blend = 1.0       # Rein NN
+
+            explore_action = self._get_miniworld_action(step)
+            nn_action = nn_blend * nn_sampled + (1.0 - nn_blend) * explore_action
+            nn_action = np.clip(nn_action, -1.0, 1.0)
 
             if mode == "miniworld" and self._gemini_override_steps > 0:
                 # Gemini-Ausweich-Override hat Priorität über alles
@@ -731,7 +748,7 @@ class Orchestrator:
                                    if self.ml_system.metrics["r_total"] else 0.0,
                     "r_intr":      self.ml_system.metrics["r_intrinsic"][-1]
                                    if self.ml_system.metrics.get("r_intrinsic") else 0.05,
-                    "sigma":       0.5,  # wird nach ml_result aktualisiert
+                    "sigma":       nn_sigma_mean,
                     "cam_pan":     self.obs_source._cam_pan
                                    if isinstance(self.obs_source, MiniWorldObsSource)
                                    else 0.0,
@@ -740,18 +757,15 @@ class Orchestrator:
                 strategy_action = self.strategy_exec.get_action(obs_info)
 
                 if strategy_action is not None:
-                    nn_action = self._get_miniworld_action(step)
-                    # Sigma aus letztem Step (wenn verfügbar)
-                    last_sigma = (self.ml_system.metrics.get("sigma", [0.5])[-1]
-                                  if self.ml_system.metrics.get("sigma") else 0.5)
                     act_arr = self.strategy_exec.blend(
-                        strategy_action, nn_action, last_sigma
+                        strategy_action, nn_action, nn_sigma_mean
                     )
                 else:
-                    # T19: Actor-Critic Action (Action Head liefert O(1) geplante Aktion)
-                    act_arr = self._get_miniworld_action(step)
+                    # T26: NN-Aktion mit stochastischem Sampling
+                    act_arr = nn_action
+
             elif mode == "miniworld":
-                act_arr = self._get_miniworld_action(step)
+                act_arr = nn_action
             else:
                 act_arr = np.clip(
                     np.array(SCENE_ACTIONS.get(

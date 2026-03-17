@@ -52,6 +52,38 @@ Strategie    B22/B23 Sigma-Blending                                ✅
 
 ---
 
+## 🔴 Priorität 0 – Exploration & Reward-System reparieren
+
+### T24 – Gemini-Fallback von 0.3 → 0.0 senken
+**Problem:** Wenn kein Gemini-Call stattfindet, bekommt der Agent `r_gemini = 0.3` als Fallback. Das belohnt "nichts tun" genauso wie mittelmäßiges Verhalten. Der Agent hat keinen Anreiz, sich aktiv zu verbessern.
+**Lösung:** Fallback auf `0.0` setzen. Nur echtes Gemini-Feedback gibt Reward. So entsteht ein klarer Gradient: Gemini-bewertete Aktionen > unbewertete Aktionen.
+**Dateien:** `B16FullIntegration.py` (Zeile 1187)
+
+### T25 – Stuck-Penalty: Feststecken aktiv bestrafen
+**Problem:** Wenn der Agent an einer Wand hängt oder sich nicht bewegt, bekommt er neutralen Reward (Gemini-Fallback 0.3, r_efficiency ~1.0). Es gibt keine Bestrafung für Stillstand.
+**Lösung:** Bild-Hash-Vergleich über die letzten N Frames. Wenn ≥10 aufeinanderfolgende Frames identisch sind → `r_stuck = -0.3` auf r_total. Zusätzlich: niedriger Bild-Varianz-Check (Wand füllt Frame) → extra Penalty.
+**Dateien:** `B16FullIntegration.py` (step-Methode, Reward-Berechnung)
+
+### T26 – Stochastische Exploration: Action-Sampling aus N(μ, σ²)
+**Problem:** Der ActionHead gibt `μ` und `σ` aus, aber `σ` wird nur als Blend-Faktor genutzt (Strategie vs. NN). Aktionen sind deterministisch – der Agent bleibt in lokalen Optima stecken. Außerdem nutzt der Orchestrator `_get_miniworld_action()` (hartcodiertes Phasenmuster) statt der NN-Aktion.
+**Lösung:**
+1. Im Orchestrator: NN-Aktion (`pred_action`) statt Phasenmuster verwenden
+2. Stochastisches Sampling: `action = μ + σ * ε` mit `ε ~ N(0, 1)`
+3. Exploration-Decay: `explore_scale = max(0.1, 1.0 - total_steps / 50000)`
+**Dateien:** `B19Orchestrator.py` (Zeile 743, 752), `B16FullIntegration.py` (step-Rückgabe)
+
+### T27 – Epistemic Exploration Bonus aus Dynamics-Ensemble
+**Problem:** Das 5-Member Dynamics-Ensemble existiert bereits (T20), wird aber nur fürs Training genutzt. Die epistemische Unsicherheit (Varianz zwischen Ensemble-Vorhersagen) fließt nicht in die Aktionswahl ein.
+**Lösung:** `r_epistemic = clip(ensemble_variance * 5, 0, 0.3)` als Bonus-Reward für unbekannte Zustände. Fördert gezieltes Erkunden.
+**Dateien:** `B16FullIntegration.py` (step-Methode)
+
+### T28 – Gemini-Hints als Soft-Reward statt harter Override
+**Problem:** Gemini-`next_action_hint` wird als starrer Override ausgeführt (mehrere Steps lang). Das verhindert, dass das NN aus der Situation lernt, und unterbricht den Lernfluss.
+**Lösung:** Hint als Soft-Reward: `r_hint = 0.1 * cosine_sim(action, hint_vector)`. Der Agent wird belohnt, wenn er in Richtung des Hints handelt, aber nicht gezwungen.
+**Dateien:** `B19Orchestrator.py` (Override-Logik)
+
+---
+
 ## 🔴 Priorität 1 – Imagination & Planning skalieren
 
 ### T19 – Actor-Critic Training in der Imagination (Dreamer-Stil)

@@ -878,6 +878,12 @@ class IntegratedSystem:
         self.train_steps        = 0
         self._label_clip_embeddings = None  # wird aus Checkpoint geladen
 
+        # T25: Stuck-Erkennung + Bewegungs-Tracking
+        self._last_obs_hash = 0
+        self._stuck_count   = 0
+        self._stuck_threshold = 10  # Frames mit identischem Bild → stuck
+        self._last_obs_flat = None  # Für Bewegungs-Bonus (Pixeldifferenz)
+
         # ── Log-Dateien (CSV, ein Timestamp pro Session) ──────
         log_dir = Path(os.path.dirname(os.path.abspath(__file__))) / "logs"
         log_dir.mkdir(exist_ok=True)
@@ -896,6 +902,7 @@ class IntegratedSystem:
         self._csv_steps.writerow([
             "total_step", "r_intr", "r_gemini", "r_reward_pred", "r_total",
             "sigma_mean", "novelty", "scene_pred", "goal", "scene", "gem_called",
+            "is_stuck",
         ])
         self._csv_train.writerow([
             "train_step", "total_step", "fe", "recon", "pred_img",
@@ -1127,6 +1134,44 @@ class IntegratedSystem:
             "constants": checkpoint.get("constants", {}),
         }
 
+    def predict_action(self, obs_np: np.ndarray) -> dict:
+        """
+        T26: Leichte Inference – nur Aktion + Sigma vorhersagen.
+        Kein Training, kein Reward, kein Logging.
+        Für die Aktionswahl im Orchestrator VOR dem eigentlichen step().
+        WICHTIG: Hidden-State wird temporär gesichert/wiederhergestellt,
+        damit step() danach korrekt arbeitet.
+        """
+        self.encoder.eval(); self.rssm.eval(); self.action_head.eval()
+        with torch.no_grad():
+            # Hidden-State sichern (wird in step() nochmal berechnet)
+            h_backup = self.rssm._h.clone() if self.rssm._h is not None else None
+
+            x = torch.from_numpy(obs_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+            _, _, z = self.encoder(x)
+            goal_p = F.normalize(self.goal_proj(self.current_goal_emb), dim=-1)
+            a_prev = torch.from_numpy(self.prev_action).float().unsqueeze(0)
+            context = self.rssm(z, goal_p, a_prev)
+            pred_action, pred_sigma = self.action_head(context)
+
+            # Hidden-State wiederherstellen
+            self.rssm._h = h_backup
+
+        mu = pred_action.squeeze(0).numpy()
+        sigma = pred_sigma.squeeze(0).numpy()
+
+        # T26: Stochastisches Sampling – N(μ, σ²) mit Exploration-Decay
+        explore_scale = max(0.1, 1.0 - self.total_steps / 50000)
+        noise = np.random.randn(ACTION_DIM).astype(np.float32) * sigma * explore_scale
+        sampled_action = np.clip(mu + noise, -1.0, 1.0)
+
+        return {
+            "pred_action": mu,
+            "sigma": sigma,
+            "sampled_action": sampled_action,
+            "explore_scale": explore_scale,
+        }
+
     def step(self, obs_np: np.ndarray, action_np: np.ndarray,
              next_obs_np: np.ndarray, scene: str, train: bool = True,
              terminal_reward: float = None, skip_api_call: bool = False):
@@ -1184,7 +1229,7 @@ class IntegratedSystem:
         novelty = float(np.clip(r_intr * 10, 0, 1))
 
         # ── Gemini ER Assessment (adaptiv) ─────────────────
-        r_gemini    = 0.3   # Fallback
+        r_gemini    = 0.0   # T24: Kein Reward ohne echtes Gemini-Feedback
         goal_prog   = 0.0
         gem_called  = False
         api_call_requested = False
@@ -1238,6 +1283,15 @@ class IntegratedSystem:
         # T12: vorherige Aktion für nächsten GRU-Schritt merken
         self.prev_action = action_np.copy()
 
+        # ── T25: Stuck-Erkennung ──────────────────────────
+        obs_hash = hash(obs_np.tobytes()) % (2**32)
+        if obs_hash == self._last_obs_hash:
+            self._stuck_count += 1
+        else:
+            self._stuck_count = 0
+        self._last_obs_hash = obs_hash
+        is_stuck = self._stuck_count >= self._stuck_threshold
+
         # ── Gesamt-Reward (alle Komponenten auf [0,1] normalisiert) ──
         r_intr_norm = min(r_intr, 1.0)
         r_goal_cos  = float(F.cosine_similarity(
@@ -1251,10 +1305,39 @@ class IntegratedSystem:
         angular_cost = abs(float(action_np[1]))          # |angular_z| ∈ [0,1]
         r_efficiency = float(1.0 - 0.5 * angular_cost)
 
+        # T25: Stuck-Penalty – Bild ändert sich nicht → Agent bewegt sich nicht
+        r_stuck_penalty = -0.3 if is_stuck else 0.0
+
+        # ── Wand-Proximity-Penalty: niedrige Bildvarianz = Wand füllt Frame ──
+        img_variance = float(np.var(obs_np.astype(np.float32)))
+        # Varianz < 200 = fast einheitliches Bild (Wand), < 500 = teilweise Wand
+        # Penalty skaliert linear: var=0 → -0.2, var=500 → 0.0
+        r_wall_penalty = -0.2 * max(0.0, 1.0 - img_variance / 500.0) if img_variance < 500.0 else 0.0
+
+        # ── Bewegungs-Bonus: Bild ändert sich = Agent bewegt sich ──
+        obs_flat = obs_np.astype(np.float32).mean(axis=2)  # Grayscale (H,W)
+        if self._last_obs_flat is not None:
+            pixel_diff = float(np.abs(obs_flat - self._last_obs_flat).mean()) / 255.0
+            # pixel_diff ~0.0 = keine Bewegung, ~0.05+ = gute Bewegung
+            r_movement = min(pixel_diff * 4.0, 0.15)  # max +0.15
+        else:
+            r_movement = 0.0
+        self._last_obs_flat = obs_flat
+
+        # ── Terminal Reward (Kollision): direkt in r_total einrechnen ──
+        r_terminal = 0.0
+        if terminal_reward is not None:
+            r_terminal = float(terminal_reward)  # +1.0 (Ziel) oder -0.5 (falsch)
+
         r_total = (0.25 * r_intr_norm + 0.35 * r_gemini +
                    0.2  * r_goal_norm +
                    0.1  * r_sigma +
-                   0.1  * r_efficiency)
+                   0.1  * r_efficiency +
+                   r_stuck_penalty +
+                   r_wall_penalty +
+                   r_movement +
+                   r_terminal)
+        r_total = max(r_total, -1.0)  # Clamp auf >= -1.0 (negative Rewards erlaubt)
 
         # ── Training Step ───────────────────────────────────
         train_info = {}
@@ -1281,6 +1364,7 @@ class IntegratedSystem:
             self.total_steps, round(r_intr, 6), round(r_gemini, 4),
             round(r_reward_pred, 4), round(r_total, 4), round(sigma_mean, 4),
             round(novelty, 4), scene_pred, self.current_goal, scene, int(gem_called),
+            int(is_stuck),
         ])
         self._log_steps.flush()
 
