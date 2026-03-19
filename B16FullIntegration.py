@@ -869,7 +869,7 @@ class IntegratedSystem:
         self.metrics = {k: [] for k in [
             "fe", "recon", "pred_img", "kl", "kl_raw", "action",
             "l_sigma", "l_reward", "l_scene",
-            "r_intrinsic", "r_gemini", "r_reward_pred", "r_hint", "r_total",
+            "r_intrinsic", "r_gemini", "r_reward_pred", "r_hint", "r_linear", "r_total",
             "goal_progress", "gemini_interval",
             "gemini_call_rate", "lr",
         ]}
@@ -878,11 +878,9 @@ class IntegratedSystem:
         self.train_steps        = 0
         self._label_clip_embeddings = None  # wird aus Checkpoint geladen
 
-        # T25: Stuck-Erkennung + Bewegungs-Tracking
-        self._last_obs_hash = 0
+        # T25: Stuck-Erkennung (basiert auf physischer Position via agent_move_dist)
         self._stuck_count   = 0
-        self._stuck_threshold = 10  # Frames mit identischem Bild → stuck
-        self._last_obs_flat = None  # Für Bewegungs-Bonus (Pixeldifferenz)
+        self._stuck_threshold = 10  # Steps ohne physische Bewegung → stuck
 
         # ── Log-Dateien (CSV, ein Timestamp pro Session) ──────
         log_dir = Path(os.path.dirname(os.path.abspath(__file__))) / "logs"
@@ -902,7 +900,7 @@ class IntegratedSystem:
         self._csv_steps.writerow([
             "total_step", "r_intr", "r_gemini", "r_reward_pred", "r_total",
             "sigma_mean", "novelty", "scene_pred", "goal", "scene", "gem_called",
-            "is_stuck", "r_hint",
+            "is_stuck", "r_hint", "r_linear", "move_dist",
         ])
         self._csv_train.writerow([
             "train_step", "total_step", "fe", "recon", "pred_img",
@@ -1175,7 +1173,8 @@ class IntegratedSystem:
     def step(self, obs_np: np.ndarray, action_np: np.ndarray,
              next_obs_np: np.ndarray, scene: str, train: bool = True,
              terminal_reward: float = None, skip_api_call: bool = False,
-             hint_vector: np.ndarray = None):
+             hint_vector: np.ndarray = None,
+             agent_move_dist: float = 0.0):
         """
         Ein vollständiger Online-Learning Step.
         Returns: dict mit allen Metriken
@@ -1284,13 +1283,13 @@ class IntegratedSystem:
         # T12: vorherige Aktion für nächsten GRU-Schritt merken
         self.prev_action = action_np.copy()
 
-        # ── T25: Stuck-Erkennung ──────────────────────────
-        obs_hash = hash(obs_np.tobytes()) % (2**32)
-        if obs_hash == self._last_obs_hash:
+        # ── T25: Stuck-Erkennung (basiert auf physischer Position) ────
+        # agent_move_dist = 0.0 heißt: nur Kamera bewegt, Körper steht still
+        MOVE_THRESHOLD = 0.005  # Mindestbewegung pro Step (MiniWorld-Einheiten)
+        if agent_move_dist < MOVE_THRESHOLD:
             self._stuck_count += 1
         else:
             self._stuck_count = 0
-        self._last_obs_hash = obs_hash
         is_stuck = self._stuck_count >= self._stuck_threshold
 
         # ── Gesamt-Reward (alle Komponenten auf [0,1] normalisiert) ──
@@ -1306,7 +1305,7 @@ class IntegratedSystem:
         angular_cost = abs(float(action_np[1]))          # |angular_z| ∈ [0,1]
         r_efficiency = float(1.0 - 0.5 * angular_cost)
 
-        # T25: Stuck-Penalty – Bild ändert sich nicht → Agent bewegt sich nicht
+        # T25: Stuck-Penalty – Agent bewegt sich physisch nicht
         r_stuck_penalty = -0.3 if is_stuck else 0.0
 
         # ── Wand-Proximity-Penalty: niedrige Bildvarianz = Wand füllt Frame ──
@@ -1315,15 +1314,13 @@ class IntegratedSystem:
         # Penalty skaliert linear: var=0 → -0.2, var=500 → 0.0
         r_wall_penalty = -0.2 * max(0.0, 1.0 - img_variance / 500.0) if img_variance < 500.0 else 0.0
 
-        # ── Bewegungs-Bonus: Bild ändert sich = Agent bewegt sich ──
-        obs_flat = obs_np.astype(np.float32).mean(axis=2)  # Grayscale (H,W)
-        if self._last_obs_flat is not None:
-            pixel_diff = float(np.abs(obs_flat - self._last_obs_flat).mean()) / 255.0
-            # pixel_diff ~0.0 = keine Bewegung, ~0.05+ = gute Bewegung
-            r_movement = min(pixel_diff * 4.0, 0.15)  # max +0.15
-        else:
-            r_movement = 0.0
-        self._last_obs_flat = obs_flat
+        # ── Bewegungs-Bonus: physische Fortbewegung statt Pixel-Differenz ──
+        # agent_move_dist ~0.0 = stillstehend, ~0.05+ = gute Bewegung
+        r_movement = min(agent_move_dist * 3.0, 0.15)  # max +0.15
+
+        # ── linear_x-Bonus: Belohnung für Vorwärts-/Rückwärtsfahrt ──
+        # Kameraschwenk allein gibt keinen Bonus, nur tatsächliche Fahrt
+        r_linear = 0.1 * abs(float(action_np[0]))  # max +0.1
 
         # ── Terminal Reward (Kollision): direkt in r_total einrechnen ──
         r_terminal = 0.0
@@ -1346,6 +1343,7 @@ class IntegratedSystem:
                    0.1  * r_sigma +
                    0.1  * r_efficiency +
                    r_hint +
+                   r_linear +
                    r_stuck_penalty +
                    r_wall_penalty +
                    r_movement +
@@ -1371,6 +1369,7 @@ class IntegratedSystem:
             self.metrics[k].append(train_info.get(k, 0.0))
         self.metrics["r_reward_pred"].append(r_reward_pred)
         self.metrics["r_hint"].append(r_hint)
+        self.metrics["r_linear"].append(r_linear)
 
         # ── CSV-Logging: steps_{ts}.csv ──────────────────────
         sigma_mean = float(pred_sigma.mean().item())
@@ -1378,7 +1377,8 @@ class IntegratedSystem:
             self.total_steps, round(r_intr, 6), round(r_gemini, 4),
             round(r_reward_pred, 4), round(r_total, 4), round(sigma_mean, 4),
             round(novelty, 4), scene_pred, self.current_goal, scene, int(gem_called),
-            int(is_stuck), round(r_hint, 4),
+            int(is_stuck), round(r_hint, 4), round(r_linear, 4),
+            round(agent_move_dist, 6),
         ])
         self._log_steps.flush()
 
@@ -1402,6 +1402,7 @@ class IntegratedSystem:
             "r_gemini":       r_gemini,
             "r_reward_pred":  r_reward_pred,   # T14: Reward ohne Gemini
             "r_hint":         r_hint,          # T28: Soft-Hint-Reward
+            "r_linear":       r_linear,        # linear_x Fahrt-Bonus
             "r_total":        r_total,
             "goal_prog":      goal_prog,
             "gem_called":     gem_called,

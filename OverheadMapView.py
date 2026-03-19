@@ -113,7 +113,7 @@ class OverheadMapView:
     def __init__(self, map_size: float = 30.0,
                  trail_length: int = 300,
                  title: str = "Overhead-Map",
-                 initial_display_every: int = 8,
+                 initial_display_every: int = 3,
                  on_display_every_changed=None):
         self.map_size     = map_size
         self.initial_size = map_size

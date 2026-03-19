@@ -456,8 +456,12 @@ class Orchestrator:
         # Setup-Status: verhindert Checkpoint-Schreiben bei vorzeitigem Schließen
         self._setup_complete = False
 
-        # T28: Gemini-Hint als Soft-Reward statt harter Override.
-        # Der Hint-Vektor bleibt aktiv bis zum nächsten Gemini-Call.
+        # T28: Hybrid – Safety-Hints als harter Override, Richtungs-Hints als Soft-Reward.
+        # Safety-Override (avoid_*, backward, free_drive):
+        self._gemini_override_action = None   # np.ndarray oder None
+        self._gemini_override_steps  = 0      # verbleibende Steps
+        self._gemini_override_queue  = []     # Sequenz [(action, steps), ...]
+        # Soft-Reward (forward, left, right, camera_*, stop):
         self._hint_vector = None              # 6D np.ndarray oder None
         self._hint_name   = ""                # Name des aktiven Hints (für Logging)
 
@@ -743,7 +747,20 @@ class Orchestrator:
             nn_action = nn_blend * nn_sampled + (1.0 - nn_blend) * explore_action
             nn_action = np.clip(nn_action, -1.0, 1.0)
 
-            if mode == "miniworld" and self.strategy_exec is not None:
+            if mode == "miniworld" and self._gemini_override_steps > 0:
+                # T28 Hybrid: Safety-Override (avoid/backward/free_drive) hat Priorität
+                act_arr = self._gemini_override_action.copy()
+                self._gemini_override_steps -= 1
+                if self._gemini_override_steps == 0:
+                    if self._gemini_override_queue:
+                        action, steps = self._gemini_override_queue.pop(0)
+                        self._gemini_override_action = action
+                        self._gemini_override_steps = steps
+                    else:
+                        self._gemini_override_action = None
+                        print(f"  [Step {step:4d}] Safety-Override beendet")
+
+            elif mode == "miniworld" and self.strategy_exec is not None:
                 # Strategie-Aktion berechnen
                 obs_info = {
                     "image_nn": obs.image,
@@ -778,12 +795,23 @@ class Orchestrator:
                 )
 
             # ── Robot Step ─────────────────────────────
+            # Position vor dem Step merken (für physische Bewegungsmessung)
+            agent_pos_before = None
+            if isinstance(self.obs_source, MiniWorldObsSource):
+                agent_pos_before = self.obs_source._env.unwrapped.agent.pos.copy()
+
             action_obj = Action.from_array(act_arr, source="policy")
             if isinstance(self.obs_source, MiniWorldObsSource):
                 self.obs_source.apply_action(action_obj, current_goal=self._goal)
             self.action_sink.send(action_obj)
 
             next_obs = self.robot.step(act_arr, source="policy")
+
+            # Physische Bewegungsdistanz berechnen
+            agent_move_dist = 0.0
+            if agent_pos_before is not None:
+                agent_pos_after = self.obs_source._env.unwrapped.agent.pos
+                agent_move_dist = float(np.linalg.norm(agent_pos_after - agent_pos_before))
 
             # ── ML-System Step (B16) ───────────────────
             ml_result = self.ml_system.step(
@@ -794,6 +822,7 @@ class Orchestrator:
                 terminal_reward=getattr(self.obs_source, '_terminal_reward', None),
                 skip_api_call=True,
                 hint_vector=self._hint_vector,
+                agent_move_dist=agent_move_dist,
             )
 
             # ── High-res für Gemini ─────────────────────
@@ -834,24 +863,55 @@ class Orchestrator:
                     gemini_event = ass
                     self._pending_gemini_event = ass
 
-                    # T28: Gemini-Hint als Soft-Reward (statt harter Override)
+                    # T28 Hybrid: Safety-Hints → harter Override, Richtungs-Hints → Soft-Reward
                     hint = ass.get("next_action_hint", "").lower()
-                    matched = None
-                    for key in HINT_VECTORS:
-                        if key in hint:
-                            # "left"/"right" nur matchen wenn nicht Teil von camera_*/avoid_*
-                            if key in ("left", "right"):
-                                if "camera" in hint or "avoid" in hint:
-                                    continue
-                            matched = key
-                            break
-                    if matched:
-                        self._hint_vector = HINT_VECTORS[matched].copy()
-                        self._hint_name = matched
-                        print(f"             → Soft-Hint: {matched.upper()}")
+                    SAFETY_HINTS = {"avoid_left", "avoid_right", "backward", "free_drive"}
+
+                    # Safety-Hints: harter Override (Kollisionsvermeidung)
+                    if "avoid_left" in hint:
+                        self._gemini_override_action = HINT_VECTORS["avoid_left"].copy()
+                        self._gemini_override_steps = 5
+                        self._hint_vector = None; self._hint_name = ""
+                        print(f"             → Safety-Override: AVOID LEFT ({self._gemini_override_steps} Steps)")
+                    elif "avoid_right" in hint:
+                        self._gemini_override_action = HINT_VECTORS["avoid_right"].copy()
+                        self._gemini_override_steps = 5
+                        self._hint_vector = None; self._hint_name = ""
+                        print(f"             → Safety-Override: AVOID RIGHT ({self._gemini_override_steps} Steps)")
+                    elif "backward" in hint:
+                        self._gemini_override_action = HINT_VECTORS["backward"].copy()
+                        self._gemini_override_steps = 3
+                        self._hint_vector = None; self._hint_name = ""
+                        print(f"             → Safety-Override: BACKWARD ({self._gemini_override_steps} Steps)")
+                    elif "free_drive" in hint:
+                        turn_dir = 0.9 if np.random.rand() > 0.5 else -0.9
+                        self._gemini_override_action = HINT_VECTORS["free_drive"].copy()
+                        self._gemini_override_steps = 4
+                        self._gemini_override_queue = [
+                            (np.array([0.2, turn_dir, 0.0, 0.0, 0.0, 0.0],
+                                      dtype=np.float32), 4),
+                        ]
+                        self._hint_vector = None; self._hint_name = ""
+                        side = "L" if turn_dir > 0 else "R"
+                        print(f"             → Safety-Override: FREE DRIVE 4× back, 4× turn {side}")
                     else:
-                        self._hint_vector = None
-                        self._hint_name = ""
+                        # Richtungs-Hints: Soft-Reward (NN bleibt in Kontrolle)
+                        matched = None
+                        for key in HINT_VECTORS:
+                            if key in SAFETY_HINTS:
+                                continue
+                            if key in hint:
+                                if key in ("left", "right") and ("camera" in hint or "avoid" in hint):
+                                    continue
+                                matched = key
+                                break
+                        if matched:
+                            self._hint_vector = HINT_VECTORS[matched].copy()
+                            self._hint_name = matched
+                            print(f"             → Soft-Hint: {matched.upper()}")
+                        else:
+                            self._hint_vector = None
+                            self._hint_name = ""
             else:
                 gemini_event = None
 

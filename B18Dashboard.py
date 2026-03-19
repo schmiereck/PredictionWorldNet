@@ -58,7 +58,7 @@ class TrainingDashboard:
 
     def __init__(self, max_history: int = 500, title: str = "B18 Dashboard",
                  initial_display_every: int = 8, on_display_every_changed=None,
-                 initial_display_every_live: int = 1, on_display_every_live_changed=None):
+                 initial_display_every_live: int = 4, on_display_every_live_changed=None):
         self.max_history = max_history
         self.title       = title
         self.fig         = None
