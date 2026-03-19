@@ -415,6 +415,48 @@ mit kopiertem State. Kein Seiteneffekt auf den echten Hidden-State.
 
 ---
 
+### T24 – Gemini-Fallback von 0.3 → 0.0 senken ✅ ERLEDIGT
+
+**Problem:** Wenn kein Gemini-Call stattfindet, bekommt der Agent `r_gemini = 0.3` als Fallback.
+Das belohnt "nichts tun" genauso wie mittelmäßiges Verhalten.
+
+**Lösung:**
+- [x] Fallback auf `0.0` gesetzt: `r_gemini = 0.0  # T24: Kein Reward ohne echtes Gemini-Feedback`
+- [x] Nur echtes Gemini-Feedback oder Terminal-Reward gibt r_gemini > 0
+
+**Dateien:** `B16FullIntegration.py`
+
+---
+
+### T25 – Stuck-Penalty: Feststecken aktiv bestrafen ✅ ERLEDIGT
+
+**Problem:** Agent an Wand/Stillstand bekam neutralen Reward, keine Bestrafung für Stillstand.
+
+**Lösung:**
+- [x] Bild-Hash-Vergleich: ≥10 identische Frames → `r_stuck_penalty = -0.3`
+- [x] Wand-Proximity-Penalty: niedrige Bildvarianz (< 500) → `r_wall_penalty` bis -0.2
+- [x] Bewegungs-Bonus: `r_movement = min(pixel_diff * 4.0, 0.15)` für sichtbare Bewegung
+
+**Dateien:** `B16FullIntegration.py` (step-Methode, Zeilen ~1286-1325)
+
+---
+
+### T26 – Stochastische Exploration: Action-Sampling aus N(μ, σ²) ✅ ERLEDIGT
+
+**Problem:** Aktionen waren deterministisch (nur μ), Agent blieb in lokalen Optima.
+Orchestrator nutzte hartcodiertes Phasenmuster statt NN-Aktion.
+
+**Lösung:**
+- [x] `predict_action(obs_np)` Methode: leichte Inference vor step()
+- [x] Hidden-State wird gesichert/wiederhergestellt (RSSM ist stateful!)
+- [x] Stochastisches Sampling: `action = μ + σ * ε * explore_scale`
+- [x] Exploration-Decay: `explore_scale = max(0.1, 1.0 - total_steps / 50000)`
+- [x] Orchestrator nutzt NN-Aktion statt `_get_miniworld_action()` Phasenmuster
+
+**Dateien:** `B16FullIntegration.py`, `B19Orchestrator.py`
+
+---
+
 ## Empfohlene Reihenfolge
 
 1. **T01** – Reward-Normalisierung (schneller Fix, großer Effekt)
