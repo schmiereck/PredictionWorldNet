@@ -457,6 +457,22 @@ Orchestrator nutzte hartcodiertes Phasenmuster statt NN-Aktion.
 
 ---
 
+---
+
+### T28 – Gemini-Hints als Soft-Reward statt harter Override ✅ ERLEDIGT
+**Problem:** Gemini-`next_action_hint` wurde als starrer Override ausgeführt (mehrere Steps lang). Das verhinderte, dass das NN aus der Situation lernt, und unterbrach den Lernfluss.
+**Lösung:** Hint als Soft-Reward: `r_hint = 0.1 * cosine_sim(action, hint_vector)`. Der Agent wird belohnt, wenn er in Richtung des Hints handelt, aber nicht gezwungen.
+- [x] `HINT_VECTORS` Lookup-Tabelle als Modul-Konstante in B19
+- [x] Override-Execution (harte Aktionsübernahme für N Steps) entfernt
+- [x] `_hint_vector` wird bei jedem Gemini-Call aktualisiert und persistiert bis zum nächsten
+- [x] `r_hint` = `0.1 * cosine_sim(action, hint_vector)` in B16 `step()` berechnet
+- [x] `r_hint` in `r_total`, Metriken, CSV-Logging und Return-Dict integriert
+- [x] Config: `override_prob` → `hint_reward_weight` (Gewicht konfigurierbar)
+
+**Dateien:** `B16FullIntegration.py`, `B19Orchestrator.py`
+
+---
+
 ## Empfohlene Reihenfolge
 
 1. **T01** – Reward-Normalisierung (schneller Fix, großer Effekt)

@@ -368,6 +368,24 @@ class MiniWorldObsSource(_b17.ObservationSource):
 
 
 # ─────────────────────────────────────────────
+# T28: Hint-Vektoren (6D Aktionsraum) für Soft-Reward
+# ─────────────────────────────────────────────
+HINT_VECTORS = {
+    "avoid_left":   np.array([0.3, -1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    "avoid_right":  np.array([0.3,  1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    "backward":     np.array([-0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    "camera_down":  np.array([0.0, 0.0, 0.0, -0.35, 0.0, 0.0], dtype=np.float32),
+    "camera_up":    np.array([0.0, 0.0, 0.0,  0.35, 0.0, 0.0], dtype=np.float32),
+    "camera_left":  np.array([0.0, 0.0, -0.5, 0.0, 0.0, 0.0], dtype=np.float32),
+    "camera_right": np.array([0.0, 0.0,  0.5, 0.0, 0.0, 0.0], dtype=np.float32),
+    "free_drive":   np.array([-0.6, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    "forward":      np.array([0.7, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    "left":         np.array([0.3,  0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    "right":        np.array([0.3, -0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    "stop":         np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+}
+
+# ─────────────────────────────────────────────
 # ORCHESTRATOR
 # ─────────────────────────────────────────────
 
@@ -398,7 +416,7 @@ class Orchestrator:
         "beta_warmup":       200,
         "min_gemini_interval": 8,
         "max_gemini_interval": 80,
-        "override_prob": 0.5, # 0.0=NN komplett frei, 1.0=Gemini-Overrides immer aktiv
+        "hint_reward_weight": 0.1, # T28: Gewicht des Soft-Hint-Rewards
     }
 
     def __init__(self, config: dict = None):
@@ -438,11 +456,10 @@ class Orchestrator:
         # Setup-Status: verhindert Checkpoint-Schreiben bei vorzeitigem Schließen
         self._setup_complete = False
 
-        # Gemini Ausweich-Override: wenn Gemini "ausweichen_links/rechts" sagt,
-        # wird die Aktion für N Steps überschrieben.
-        self._gemini_override_action = None   # np.ndarray oder None
-        self._gemini_override_steps  = 0      # verbleibende Steps
-        self._gemini_override_queue  = []     # Sequenz [(action, steps), ...]
+        # T28: Gemini-Hint als Soft-Reward statt harter Override.
+        # Der Hint-Vektor bleibt aktiv bis zum nächsten Gemini-Call.
+        self._hint_vector = None              # 6D np.ndarray oder None
+        self._hint_name   = ""                # Name des aktiven Hints (für Logging)
 
     def setup(self):
         """Erstellt alle Komponenten."""
@@ -726,21 +743,7 @@ class Orchestrator:
             nn_action = nn_blend * nn_sampled + (1.0 - nn_blend) * explore_action
             nn_action = np.clip(nn_action, -1.0, 1.0)
 
-            if mode == "miniworld" and self._gemini_override_steps > 0:
-                # Gemini-Ausweich-Override hat Priorität über alles
-                act_arr = self._gemini_override_action.copy()
-                self._gemini_override_steps -= 1
-                if self._gemini_override_steps == 0:
-                    # Nächste Phase aus Queue laden, falls vorhanden
-                    if self._gemini_override_queue:
-                        action, steps = self._gemini_override_queue.pop(0)
-                        self._gemini_override_action = action
-                        self._gemini_override_steps = steps
-                    else:
-                        self._gemini_override_action = None
-                        print(f"  [Step {step:4d}] Gemini Override beendet")
-
-            elif mode == "miniworld" and self.strategy_exec is not None:
+            if mode == "miniworld" and self.strategy_exec is not None:
                 # Strategie-Aktion berechnen
                 obs_info = {
                     "image_nn": obs.image,
@@ -789,7 +792,8 @@ class Orchestrator:
                 next_obs_np=next_obs.image,
                 scene=self._scene,
                 terminal_reward=getattr(self.obs_source, '_terminal_reward', None),
-                skip_api_call=True
+                skip_api_call=True,
+                hint_vector=self._hint_vector,
             )
 
             # ── High-res für Gemini ─────────────────────
@@ -830,80 +834,24 @@ class Orchestrator:
                     gemini_event = ass
                     self._pending_gemini_event = ass
 
-                    # Gemini Ausweich-Override prüfen
+                    # T28: Gemini-Hint als Soft-Reward (statt harter Override)
                     hint = ass.get("next_action_hint", "").lower()
-
-                    # Override-Wahrscheinlichkeit aus Config (0.0 = NN frei, 1.0 = Gemini aktiv)
-                    override_prob = self.cfg.get("override_prob", 0.5)
-                    
-                    if hint and np.random.rand() > override_prob:
-                        print(f"             → Override ignoriert (Prob={override_prob:.2f})")
-                        hint = ""  # Hint verwerfen
-
-                    if "avoid_left" in hint:
-                        # Hindernis ist links -> Weiche nach RECHTS aus
-                        self._gemini_override_action = np.array(
-                            [0.3, -1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 5
-                        print(f"             → Avoid-Override: AVOID LEFT (turn right) ({self._gemini_override_steps} Steps)")
-                    elif "avoid_right" in hint:
-                        # Hindernis ist rechts -> Weiche nach LINKS aus
-                        self._gemini_override_action = np.array(
-                            [0.3, 1.1, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 5
-                        print(f"             → Avoid-Override: AVOID RIGHT (turn left) ({self._gemini_override_steps} Steps)")
-                    elif "backward" in hint:
-                        self._gemini_override_action = np.array(
-                            [-0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 3
-                        print(f"             → Backward-Override: BACK ({self._gemini_override_steps} Steps)")
-                    elif "camera_down" in hint:
-                        self._gemini_override_action = np.array(
-                            [0.0, 0.0, 0.0, -0.35, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 2
-                        print(f"             → Override: TILT DOWN ({self._gemini_override_steps} Steps)")
-                    elif "camera_up" in hint:
-                        self._gemini_override_action = np.array(
-                            [0.0, 0.0, 0.0, 0.35, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 2
-                        print(f"             → Override: TILT UP ({self._gemini_override_steps} Steps)")
-                    elif "camera_left" in hint:
-                        self._gemini_override_action = np.array(
-                            [0.0, 0.0, -0.5, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 2
-                        print(f"             → Override: PAN LEFT ({self._gemini_override_steps} Steps)")
-                    elif "camera_right" in hint:
-                        self._gemini_override_action = np.array(
-                            [0.0, 0.0, 0.5, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 2
-                        print(f"             → Override: PAN RIGHT ({self._gemini_override_steps} Steps)")
-                    elif "free_drive" in hint:
-                        # Mehrstufig: 4 Steps rückwärts, dann 4 Steps scharf drehen
-                        turn_dir = 0.9 if np.random.rand() > 0.5 else -0.9
-                        self._gemini_override_action = np.array(
-                            [-0.6, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 4
-                        self._gemini_override_queue = [
-                            (np.array([0.2, turn_dir, 0.0, 0.0, 0.0, 0.0],
-                                      dtype=np.float32), 4),
-                        ]
-                        side = "L" if turn_dir > 0 else "R"
-                        print(f"             → FREE DRIVE: 4× back, 4× turn {side}")
-                    elif "forward" in hint:
-                        self._gemini_override_action = np.array(
-                            [0.7, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 3
-                        print(f"             → Override: FORWARD ({self._gemini_override_steps} Steps)")
-                    elif "left" in hint and "camera" not in hint and "avoid" not in hint:
-                        self._gemini_override_action = np.array(
-                            [0.3, 0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 2
-                        print(f"             → Override: TURN LEFT ({self._gemini_override_steps} Steps)")
-                    elif "right" in hint and "camera" not in hint and "avoid" not in hint:
-                        self._gemini_override_action = np.array(
-                            [0.3, -0.8, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-                        self._gemini_override_steps = 2
-                        print(f"             → Override: TURN RIGHT ({self._gemini_override_steps} Steps)")
+                    matched = None
+                    for key in HINT_VECTORS:
+                        if key in hint:
+                            # "left"/"right" nur matchen wenn nicht Teil von camera_*/avoid_*
+                            if key in ("left", "right"):
+                                if "camera" in hint or "avoid" in hint:
+                                    continue
+                            matched = key
+                            break
+                    if matched:
+                        self._hint_vector = HINT_VECTORS[matched].copy()
+                        self._hint_name = matched
+                        print(f"             → Soft-Hint: {matched.upper()}")
+                    else:
+                        self._hint_vector = None
+                        self._hint_name = ""
             else:
                 gemini_event = None
 

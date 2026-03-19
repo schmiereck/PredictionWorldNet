@@ -59,10 +59,7 @@ Strategie    B22/B23 Sigma-Blending                                ✅
 **Lösung:** `r_epistemic = clip(ensemble_variance * 5, 0, 0.3)` als Bonus-Reward für unbekannte Zustände. Fördert gezieltes Erkunden.
 **Dateien:** `B16FullIntegration.py` (step-Methode)
 
-### T28 – Gemini-Hints als Soft-Reward statt harter Override
-**Problem:** Gemini-`next_action_hint` wird als starrer Override ausgeführt (mehrere Steps lang). Das verhindert, dass das NN aus der Situation lernt, und unterbricht den Lernfluss.
-**Lösung:** Hint als Soft-Reward: `r_hint = 0.1 * cosine_sim(action, hint_vector)`. Der Agent wird belohnt, wenn er in Richtung des Hints handelt, aber nicht gezwungen.
-**Dateien:** `B19Orchestrator.py` (Override-Logik)
+### T28 – ✅ ERLEDIGT → siehe DONE.md
 
 ---
 

@@ -869,7 +869,7 @@ class IntegratedSystem:
         self.metrics = {k: [] for k in [
             "fe", "recon", "pred_img", "kl", "kl_raw", "action",
             "l_sigma", "l_reward", "l_scene",
-            "r_intrinsic", "r_gemini", "r_reward_pred", "r_total",
+            "r_intrinsic", "r_gemini", "r_reward_pred", "r_hint", "r_total",
             "goal_progress", "gemini_interval",
             "gemini_call_rate", "lr",
         ]}
@@ -902,7 +902,7 @@ class IntegratedSystem:
         self._csv_steps.writerow([
             "total_step", "r_intr", "r_gemini", "r_reward_pred", "r_total",
             "sigma_mean", "novelty", "scene_pred", "goal", "scene", "gem_called",
-            "is_stuck",
+            "is_stuck", "r_hint",
         ])
         self._csv_train.writerow([
             "train_step", "total_step", "fe", "recon", "pred_img",
@@ -1174,7 +1174,8 @@ class IntegratedSystem:
 
     def step(self, obs_np: np.ndarray, action_np: np.ndarray,
              next_obs_np: np.ndarray, scene: str, train: bool = True,
-             terminal_reward: float = None, skip_api_call: bool = False):
+             terminal_reward: float = None, skip_api_call: bool = False,
+             hint_vector: np.ndarray = None):
         """
         Ein vollständiger Online-Learning Step.
         Returns: dict mit allen Metriken
@@ -1329,10 +1330,22 @@ class IntegratedSystem:
         if terminal_reward is not None:
             r_terminal = float(terminal_reward)  # +1.0 (Ziel) oder -0.5 (falsch)
 
+        # ── T28: Soft-Hint-Reward ──────────────────────────────
+        # Cosine-Similarity zwischen ausgeführter Aktion und Gemini-Hint-Vektor.
+        # Belohnt den Agenten für Handeln in Richtung des Hints, ohne ihn zu zwingen.
+        r_hint = 0.0
+        if hint_vector is not None:
+            act_norm = np.linalg.norm(action_np)
+            hint_norm = np.linalg.norm(hint_vector)
+            if act_norm > 1e-6 and hint_norm > 1e-6:
+                cos_sim = float(np.dot(action_np, hint_vector) / (act_norm * hint_norm))
+                r_hint = 0.1 * cos_sim  # ∈ [-0.1, 0.1]
+
         r_total = (0.25 * r_intr_norm + 0.35 * r_gemini +
                    0.2  * r_goal_norm +
                    0.1  * r_sigma +
                    0.1  * r_efficiency +
+                   r_hint +
                    r_stuck_penalty +
                    r_wall_penalty +
                    r_movement +
@@ -1357,6 +1370,7 @@ class IntegratedSystem:
         for k in ["fe", "recon", "pred_img", "kl", "kl_raw", "action", "l_sigma", "l_reward", "l_scene"]:
             self.metrics[k].append(train_info.get(k, 0.0))
         self.metrics["r_reward_pred"].append(r_reward_pred)
+        self.metrics["r_hint"].append(r_hint)
 
         # ── CSV-Logging: steps_{ts}.csv ──────────────────────
         sigma_mean = float(pred_sigma.mean().item())
@@ -1364,7 +1378,7 @@ class IntegratedSystem:
             self.total_steps, round(r_intr, 6), round(r_gemini, 4),
             round(r_reward_pred, 4), round(r_total, 4), round(sigma_mean, 4),
             round(novelty, 4), scene_pred, self.current_goal, scene, int(gem_called),
-            int(is_stuck),
+            int(is_stuck), round(r_hint, 4),
         ])
         self._log_steps.flush()
 
@@ -1387,6 +1401,7 @@ class IntegratedSystem:
             "r_intr":         r_intr,
             "r_gemini":       r_gemini,
             "r_reward_pred":  r_reward_pred,   # T14: Reward ohne Gemini
+            "r_hint":         r_hint,          # T28: Soft-Hint-Reward
             "r_total":        r_total,
             "goal_prog":      goal_prog,
             "gem_called":     gem_called,
