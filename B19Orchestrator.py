@@ -406,8 +406,8 @@ class Orchestrator:
         "n_steps":           500,
         "scene_switch":      40,
         "update_display":    8,
-        "update_display_live": 1,
-        "update_display_overhead": 8,
+        "update_display_live": 4,
+        "update_display_overhead": 3,
         "miniworld_env":     "PredictionWorld-OneRoom-v0",
         "buffer_size":       1000,
         "batch_size":        16,
@@ -541,7 +541,7 @@ class Orchestrator:
                    f"Gemini: {'✓' if self.gemini.mode=='gemini' else 'Mock'}"),
             initial_display_every=self.cfg.get("update_display", 8),
             on_display_every_changed=lambda val: self.cfg.update({"update_display": val}),
-            initial_display_every_live=self.cfg.get("update_display_live", 1),
+            initial_display_every_live=self.cfg.get("update_display_live", 4),
             on_display_every_live_changed=lambda val: self.cfg.update({"update_display_live": val})
         )
         self.dashboard.setup()
@@ -554,7 +554,7 @@ class Orchestrator:
             self.overhead = OverheadMapView(
                 map_size=30.0, trail_length=trail_len,
                 title=f"Overhead-Map  |  {self.cfg['mode'].upper()}",
-                initial_display_every=self.cfg.get("update_display_overhead", 8),
+                initial_display_every=self.cfg.get("update_display_overhead", 3),
                 on_display_every_changed=lambda val: self.cfg.update({"update_display_overhead": val})
             )
             self.overhead.setup()
