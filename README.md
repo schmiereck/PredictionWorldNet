@@ -15,13 +15,13 @@
 pip install -r requirements.txt
 
 # 2. (Optional) VAE vortrainieren — Bildkompression lernen
-python B20PreTrainVAE.py --source miniworld --epochs 50
+python B20PreTrainVAE.py --source miniworld
 
 # 3. (Optional) CLIP Goal-Projection trainieren
-python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_*.pt --epochs 60
+python B21PreTrainCLIP.py --checkpoint checkpoints/pwn_*.pt
 
 # 4. (Optional) Dynamics-Head vortrainieren — Zustandsübergänge lernen
-python B24PreTrainDynamics.py --checkpoint checkpoints/pwn_*.pt --epochs 30
+python B24PreTrainDynamics.py --checkpoint checkpoints/pwn_*.pt
 
 # 5. Simulation starten (Hauptprogramm)
 python B19OrchestratorModeMiniworld.py
@@ -32,11 +32,11 @@ python B19OrchestratorModeMiniworld.py
 | Skript | Parameter | Beschreibung |
 |--------|-----------|-------------|
 | `B20PreTrainVAE.py` | `--source miniworld\|synthetic` | Datenquelle |
-| | `--epochs N` | Anzahl Epochen (Standard: 50) |
-| `B21PreTrainCLIP.py` | `--vae-checkpoint PATH` | VAE-Checkpoint laden |
+| | `--epochs N` | Anzahl Epochen (Standard: 60) |
+| `B21PreTrainCLIP.py` | `--checkpoint PATH` | VAE-Checkpoint laden |
 | | `--epochs N` | Anzahl Epochen (Standard: 60) |
 | `B24PreTrainDynamics.py` | `--checkpoint PATH` | Checkpoint laden |
-| | `--epochs N` | Anzahl Epochen (Standard: 30) |
+| | `--epochs N` | Anzahl Epochen (Standard: 40) |
 | `B16FullIntegration.py` | `--headless` | Ohne GUI (nur Konsole + CSV) |
 | | `--steps=N` | Anzahl Schritte (Standard: 300) |
 

@@ -5,8 +5,8 @@ Trainiert Encoder + Decoder rein auf Bild-Rekonstruktion,
 ohne RL, ohne Gemini, ohne Transformer.
 
 Kann wiederholt auf dasselbe Netz angewendet werden:
-    1. Lauf: python B20PreTrainVAE.py --epochs 50
-    2. Lauf: python B20PreTrainVAE.py --checkpoint checkpoints/pwn_checkpoint_*.pt --epochs 50
+    1. Lauf: python B20PreTrainVAE.py
+    2. Lauf: python B20PreTrainVAE.py --checkpoint checkpoints/pwn_checkpoint_*.pt
 
 Datenquellen:
     --source miniworld   → Frames aus MiniWorld Gym (zufällige Exploration)

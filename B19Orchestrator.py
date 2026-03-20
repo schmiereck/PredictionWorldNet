@@ -277,6 +277,21 @@ class MiniWorldObsSource(_b17.ObservationSource):
                       "cam_pan": self._cam_pan},
         )
 
+    def get_goal_dist(self, current_goal: str) -> float:
+        """Physische Distanz zum Zielobjekt. Returns inf wenn nicht gefunden."""
+        if not self._available or not current_goal:
+            return float('inf')
+        from MiniWorldRegistry import get_entity_color_name, get_entity_type_name
+        agent_pos = self._env.unwrapped.agent.pos
+        for ent in self._env.unwrapped.entities:
+            if ent == self._env.unwrapped.agent:
+                continue
+            ent_type = get_entity_type_name(ent)
+            ent_color = get_entity_color_name(ent) or "unknown"
+            if ent_color in current_goal and ent_type in current_goal:
+                return float(np.linalg.norm(agent_pos - ent.pos))
+        return float('inf')
+
     def apply_action(self, action: _b17.Action, current_goal: str = ""):
         """
         Überträgt eine Aktion an MiniWorld.
@@ -731,10 +746,10 @@ class Orchestrator:
             nn_sigma_mean = float(nn_pred["sigma"].mean())
 
             # T26: Warmup-Blend — Phasenmuster als Basis, NN übernimmt graduell
-            # Erste 2000 Steps: hauptsächlich Phasenmuster (Agent erkundet den Raum)
-            # Danach: NN übernimmt schrittweise (über weitere 3000 Steps)
-            NN_WARMUP_START = 2000   # Ab hier beginnt NN-Übernahme
-            NN_WARMUP_END   = 5000   # Ab hier ist NN komplett aktiv
+            # Längere Exploration: Agent braucht diverse Erfahrungen (Objekte sehen,
+            # Annäherungen, Kollisionen, Recovery) bevor NN sinnvolle Policy hat.
+            NN_WARMUP_START = 10000  # Ab hier beginnt NN-Übernahme
+            NN_WARMUP_END   = 20000  # Ab hier ist NN komplett aktiv
             ts = self.ml_system.total_steps
             if ts < NN_WARMUP_START:
                 nn_blend = 0.0       # Rein Phasenmuster
@@ -795,10 +810,12 @@ class Orchestrator:
                 )
 
             # ── Robot Step ─────────────────────────────
-            # Position vor dem Step merken (für physische Bewegungsmessung)
+            # Position + Zieldistanz vor dem Step merken
             agent_pos_before = None
+            goal_dist_before = float('inf')
             if isinstance(self.obs_source, MiniWorldObsSource):
                 agent_pos_before = self.obs_source._env.unwrapped.agent.pos.copy()
+                goal_dist_before = self.obs_source.get_goal_dist(self._goal)
 
             action_obj = Action.from_array(act_arr, source="policy")
             if isinstance(self.obs_source, MiniWorldObsSource):
@@ -807,11 +824,32 @@ class Orchestrator:
 
             next_obs = self.robot.step(act_arr, source="policy")
 
-            # Physische Bewegungsdistanz berechnen
+            # Physische Bewegungsdistanz + Ziel-Annäherung berechnen
             agent_move_dist = 0.0
+            goal_dist_delta = 0.0  # negativ = näher gekommen
             if agent_pos_before is not None:
                 agent_pos_after = self.obs_source._env.unwrapped.agent.pos
                 agent_move_dist = float(np.linalg.norm(agent_pos_after - agent_pos_before))
+                goal_dist_after = self.obs_source.get_goal_dist(self._goal)
+                if goal_dist_before < 1e6 and goal_dist_after < 1e6:
+                    goal_dist_delta = goal_dist_before - goal_dist_after  # >0 = näher
+
+            # ── Falsche-Objekt-Kollision → sofort Recovery-Override ──
+            _t_rew = getattr(self.obs_source, '_terminal_reward', None)
+            if (_t_rew is not None and _t_rew < 0
+                    and self._gemini_override_steps == 0
+                    and isinstance(self.obs_source, MiniWorldObsSource)):
+                # 3-Phasen: Rückwärts → Drehen (zufällige Richtung) → Vorwärts
+                turn_dir = 1.0 if np.random.rand() > 0.5 else -1.0
+                turn_vec = np.array([0.3, turn_dir * 1.1, 0.0, 0.0, 0.0, 0.0],
+                                    dtype=np.float32)
+                self._gemini_override_action = HINT_VECTORS["backward"].copy()
+                self._gemini_override_steps = 4
+                self._gemini_override_queue = [
+                    (turn_vec, 5),                          # drehen
+                    (HINT_VECTORS["forward"].copy(), 3),    # wegfahren
+                ]
+                print(f"  [Step {step:4d}] Objekt-Recovery: 4× back, 5× turn, 3× fwd")
 
             # ── ML-System Step (B16) ───────────────────
             ml_result = self.ml_system.step(
@@ -819,10 +857,11 @@ class Orchestrator:
                 action_np=act_arr,
                 next_obs_np=next_obs.image,
                 scene=self._scene,
-                terminal_reward=getattr(self.obs_source, '_terminal_reward', None),
+                terminal_reward=_t_rew,
                 skip_api_call=True,
                 hint_vector=self._hint_vector,
                 agent_move_dist=agent_move_dist,
+                goal_dist_delta=goal_dist_delta,
             )
 
             # ── High-res für Gemini ─────────────────────
@@ -868,16 +907,26 @@ class Orchestrator:
                     SAFETY_HINTS = {"avoid_left", "avoid_right", "backward", "free_drive"}
 
                     # Safety-Hints: harter Override (Kollisionsvermeidung)
+                    # 3-Phasen-Recovery: Rückwärts → Drehen → Vorwärts
+                    # Verhindert "Festkleben" an Objekten (reines Drehen reicht nicht)
                     if "avoid_left" in hint:
-                        self._gemini_override_action = HINT_VECTORS["avoid_left"].copy()
-                        self._gemini_override_steps = 5
+                        self._gemini_override_action = HINT_VECTORS["backward"].copy()
+                        self._gemini_override_steps = 3
+                        self._gemini_override_queue = [
+                            (HINT_VECTORS["avoid_left"].copy(), 4),   # drehen
+                            (HINT_VECTORS["forward"].copy(), 2),      # wegfahren
+                        ]
                         self._hint_vector = None; self._hint_name = ""
-                        print(f"             → Safety-Override: AVOID LEFT ({self._gemini_override_steps} Steps)")
+                        print(f"             → Safety-Override: AVOID LEFT (3× back, 4× turn, 2× fwd)")
                     elif "avoid_right" in hint:
-                        self._gemini_override_action = HINT_VECTORS["avoid_right"].copy()
-                        self._gemini_override_steps = 5
+                        self._gemini_override_action = HINT_VECTORS["backward"].copy()
+                        self._gemini_override_steps = 3
+                        self._gemini_override_queue = [
+                            (HINT_VECTORS["avoid_right"].copy(), 4),  # drehen
+                            (HINT_VECTORS["forward"].copy(), 2),      # wegfahren
+                        ]
                         self._hint_vector = None; self._hint_name = ""
-                        print(f"             → Safety-Override: AVOID RIGHT ({self._gemini_override_steps} Steps)")
+                        print(f"             → Safety-Override: AVOID RIGHT (3× back, 4× turn, 2× fwd)")
                     elif "backward" in hint:
                         self._gemini_override_action = HINT_VECTORS["backward"].copy()
                         self._gemini_override_steps = 3

@@ -25,10 +25,10 @@ This starts the full system with:
 ### Pretraining Pipeline (Optional)
 ```bash
 # 1. Train VAE (Encoder + Decoder)
-python B20PreTrainVAE.py --source miniworld --epochs 50
+python B20PreTrainVAE.py --source miniworld
 
 # 2. Train CLIP Goal Projection
-python B21PreTrainCLIP.py --vae-checkpoint checkpoints/pwn_*.pt --epochs 60
+python B21PreTrainCLIP.py --checkpoint checkpoints/pwn_*.pt
 
 # 3. Run live training (loads checkpoint automatically)
 python B19OrchestratorModeMiniworld.py

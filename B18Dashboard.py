@@ -339,7 +339,14 @@ class TrainingDashboard:
             lbl = goal.strip() if goal and goal.strip() else scene
             self.latent_labels.append(lbl)
 
-        steps_x = list(range(len(self.hist["fe"])))
+        # X-Achse: echte Step-Nummern (einheitlich für alle Timeline-Panels)
+        n_hist = len(self.hist["fe"])
+        if n_hist > 0:
+            step_end = self._step
+            step_start = step_end - n_hist + 1
+            steps_x = list(range(step_start, step_end + 1))
+        else:
+            steps_x = []
 
         # Neu: Überspringe Rendering, wenn Fenster minimiert ist (verhindert Einfrieren)
         if self.is_minimized():
@@ -562,11 +569,11 @@ class TrainingDashboard:
                         sx[19:], ma,
                         color='red', linewidth=2, linestyle='--', label='MA-20')
 
-                # Gemini-Calls als vertikale Linien
+                # Gemini-Calls als vertikale Linien (echte Step-Nummern)
                 for ev in self.gemini_events:
-                    si = ev["step"] - (self._step - n)
-                    if 0 <= si < n:
-                        self.ax_fe.axvline(si, color='cyan',
+                    gs = ev["step"]
+                    if steps_x and steps_x[0] <= gs <= steps_x[-1]:
+                        self.ax_fe.axvline(gs, color='cyan',
                                            linewidth=1, alpha=0.4)
 
             self.ax_fe.set_title(
@@ -601,7 +608,7 @@ class TrainingDashboard:
                 if len(self.hist["r_total"]) >= 20:
                     ma = np.convolve(list(self.hist["r_total"]),
                                      np.ones(20)/20, mode='valid')
-                    self.ax_rewards.plot(range(19, len(self.hist["r_total"])),
+                    self.ax_rewards.plot(steps_x[19:],
                                          ma, color='orange', linewidth=2.5,
                                          linestyle='--', label='Total MA-20')
             self.ax_rewards.set_title('Rewards', fontsize=9, color='white')
@@ -716,6 +723,15 @@ class TrainingDashboard:
             self.ax_prog.legend(fontsize=6, ncol=2)
             self.ax_prog.set_facecolor('#111111')
             self.ax_prog.tick_params(colors='white')
+
+            # ── Einheitliche X-Achse für alle Timeline-Panels ──
+            if steps_x:
+                xlim = (steps_x[0], steps_x[-1])
+                for ax in [self.ax_fe, self.ax_rewards, self.ax_gemini, self.ax_prog]:
+                    ax.set_xlim(xlim)
+                # Nur untere Reihe bekommt Label (spart Platz)
+                for ax in [self.ax_gemini, self.ax_prog]:
+                    ax.set_xlabel('Steps', fontsize=7, color='gray')
 
             # ── Statistiken + T18 EFE-Proxy ────────────
             self.ax_stats.clear(); self.ax_stats.axis('off')

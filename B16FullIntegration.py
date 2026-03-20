@@ -900,7 +900,7 @@ class IntegratedSystem:
         self._csv_steps.writerow([
             "total_step", "r_intr", "r_gemini", "r_reward_pred", "r_total",
             "sigma_mean", "novelty", "scene_pred", "goal", "scene", "gem_called",
-            "is_stuck", "r_hint", "r_linear", "move_dist",
+            "is_stuck", "r_hint", "r_linear", "move_dist", "r_approach",
         ])
         self._csv_train.writerow([
             "train_step", "total_step", "fe", "recon", "pred_img",
@@ -1160,6 +1160,10 @@ class IntegratedSystem:
 
         # T26: Stochastisches Sampling – N(μ, σ²) mit Exploration-Decay
         explore_scale = max(0.1, 1.0 - self.total_steps / 50000)
+        # Exploration-Burst: wenn Agent feststeckt, Exploration hochsetzen
+        STUCK_EXPLORE_THRESHOLD = 20  # Steps ohne Bewegung
+        if self._stuck_count >= STUCK_EXPLORE_THRESHOLD:
+            explore_scale = 0.8
         noise = np.random.randn(ACTION_DIM).astype(np.float32) * sigma * explore_scale
         sampled_action = np.clip(mu + noise, -1.0, 1.0)
 
@@ -1174,7 +1178,8 @@ class IntegratedSystem:
              next_obs_np: np.ndarray, scene: str, train: bool = True,
              terminal_reward: float = None, skip_api_call: bool = False,
              hint_vector: np.ndarray = None,
-             agent_move_dist: float = 0.0):
+             agent_move_dist: float = 0.0,
+             goal_dist_delta: float = 0.0):
         """
         Ein vollständiger Online-Learning Step.
         Returns: dict mit allen Metriken
@@ -1322,6 +1327,11 @@ class IntegratedSystem:
         # Kameraschwenk allein gibt keinen Bonus, nur tatsächliche Fahrt
         r_linear = 0.1 * abs(float(action_np[0]))  # max +0.1
 
+        # ── Annäherungs-Reward: physische Distanz zum Ziel verringern ──
+        # goal_dist_delta > 0 = näher gekommen, < 0 = entfernt
+        # Skalierung: 0.1 MiniWorld-Einheiten Annäherung → +0.2 Reward
+        r_approach = float(np.clip(goal_dist_delta * 2.0, -0.15, 0.25))
+
         # ── Terminal Reward (Kollision): direkt in r_total einrechnen ──
         r_terminal = 0.0
         if terminal_reward is not None:
@@ -1344,6 +1354,7 @@ class IntegratedSystem:
                    0.1  * r_efficiency +
                    r_hint +
                    r_linear +
+                   r_approach +
                    r_stuck_penalty +
                    r_wall_penalty +
                    r_movement +
@@ -1378,7 +1389,7 @@ class IntegratedSystem:
             round(r_reward_pred, 4), round(r_total, 4), round(sigma_mean, 4),
             round(novelty, 4), scene_pred, self.current_goal, scene, int(gem_called),
             int(is_stuck), round(r_hint, 4), round(r_linear, 4),
-            round(agent_move_dist, 6),
+            round(agent_move_dist, 6), round(r_approach, 4),
         ])
         self._log_steps.flush()
 
@@ -1554,6 +1565,19 @@ class IntegratedSystem:
         self.optimizer.zero_grad()
         fe.backward()
 
+        # Grad-Normen für World-Model HIER messen (nach fe.backward(), vor zero_grad)
+        def _grad_norm(module):
+            return sum(p.grad.norm().item()**2
+                       for p in module.parameters() if p.grad is not None)**0.5
+        wm_grad_norms = {
+            "encoder":     _grad_norm(self.encoder),
+            "decoder":     _grad_norm(self.decoder),
+            "rssm":        _grad_norm(self.rssm),
+            "goal_proj":   _grad_norm(self.goal_proj),
+            "reward_head": _grad_norm(self.reward_head),
+            "scene_head":  _grad_norm(self.scene_head),
+        }
+
         torch.nn.utils.clip_grad_norm_(
             list(self.encoder.parameters()) +
             list(self.decoder.parameters()) +
@@ -1645,21 +1669,10 @@ class IntegratedSystem:
             l_ac_final += 0.1 * l_value
             
         l_ac_final.backward()
-        
-        # Gradient-Norm pro Modul (Monitoring)
-        def _grad_norm(module):
-            return sum(p.grad.norm().item()**2
-                       for p in module.parameters() if p.grad is not None)**0.5
 
-        grad_norms = {
-            "encoder":     _grad_norm(self.encoder),
-            "decoder":     _grad_norm(self.decoder),
-            "rssm":        _grad_norm(self.rssm),
-            "action_head": _grad_norm(self.action_head),
-            "goal_proj":   _grad_norm(self.goal_proj),
-            "reward_head": _grad_norm(self.reward_head),
-            "scene_head":  _grad_norm(self.scene_head),
-        }
+        # Actor-Grad-Norm messen, World-Model-Norms kommen von oben (nach fe.backward)
+        grad_norms = dict(wm_grad_norms)  # encoder, decoder, rssm, goal_proj, reward_head, scene_head
+        grad_norms["action_head"] = _grad_norm(self.action_head)
         
         torch.nn.utils.clip_grad_norm_(
             list(self.action_head.parameters()) + list(self.value_head.parameters()),
