@@ -81,8 +81,11 @@ class TrainingDashboard:
             "inaccuracy",   # T18: recon + l_pred_img  (Inaccuracy-Term der FE)
         ]}
 
-        # Gemini-Events (Step + Inhalt)
-        self.gemini_events = deque(maxlen=50)
+        # Echte Step-Nummern für korrekte X-Achse (update wird nicht jeden Step aufgerufen)
+        self.step_history = deque(maxlen=max_history)
+
+        # Gemini-Events (Step + Inhalt) – genug für gesamten Trainingslauf
+        self.gemini_events = deque(maxlen=max_history)
 
         # Latent-Space Punkte für PCA-Visualisierung
         self.latent_points  = deque(maxlen=200)
@@ -339,14 +342,9 @@ class TrainingDashboard:
             lbl = goal.strip() if goal and goal.strip() else scene
             self.latent_labels.append(lbl)
 
-        # X-Achse: echte Step-Nummern (einheitlich für alle Timeline-Panels)
-        n_hist = len(self.hist["fe"])
-        if n_hist > 0:
-            step_end = self._step
-            step_start = step_end - n_hist + 1
-            steps_x = list(range(step_start, step_end + 1))
-        else:
-            steps_x = []
+        # X-Achse: echte Step-Nummern (update wird nur alle N Steps aufgerufen)
+        self.step_history.append(self._step)
+        steps_x = list(self.step_history)
 
         # Neu: Überspringe Rendering, wenn Fenster minimiert ist (verhindert Einfrieren)
         if self.is_minimized():

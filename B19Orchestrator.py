@@ -323,9 +323,11 @@ class MiniWorldObsSource(_b17.ObservationSource):
         self._cam_tilt = float(ros2["camera"]["tilt"])
 
         # MiniWorld: Diskrete Aktionen (0=links, 1=rechts, 2=vorwärts).
-        # Vorwärts-Bias: Nur bei deutlich stärkerer Drehung als Vorwärts wird gedreht.
-        # Sonst wird vorwärts bevorzugt, damit der Agent den Raum erkundet.
-        if lx > 0.05 and abs(az) < 2.0 * abs(lx):
+        # KEIN Rückwärts in MiniWorld! lx < 0 → Drehung (Ausweichen).
+        if lx < -0.05:
+            # "Rückwärts" → Drehung als Ersatz (MiniWorld kann nicht rückwärts)
+            gym_action = 0 if az >= 0 else 1
+        elif lx > 0.05 and abs(az) < 2.0 * abs(lx):
             gym_action = 2                     # vorwärts (Vorrang)
         elif abs(az) > 0.05:
             gym_action = 0 if az > 0 else 1   # links / rechts
@@ -338,29 +340,35 @@ class MiniWorldObsSource(_b17.ObservationSource):
         # Eigene Ziel-Erkennung mit Farbabgleich
         agent_pos = self._env.unwrapped.agent.pos
         self._terminal_reward = None
-        
+
+        # Cooldown: max 1 Kollisions-Strafe pro 15 Steps (verhindert Burst-Spam)
+        if not hasattr(self, '_collision_cooldown'):
+            self._collision_cooldown = 0
+        if self._collision_cooldown > 0:
+            self._collision_cooldown -= 1
+
         for ent in self._env.unwrapped.entities:
             if ent == self._env.unwrapped.agent:
                 continue # Sich selbst ignorieren
-                
+
             dist = np.linalg.norm(agent_pos - ent.pos)
-            # Toleranz: base + forward_step (0.15m) damit der Physik-Stopp
-            # von MiniWorld abgedeckt wird (Agent wird bei base+step blockiert)
             base_dist = self._env.unwrapped.agent.radius + ent.radius
-            threshold = base_dist + 0.18
+            threshold = base_dist + 0.08  # reduziert von +0.18 → +0.08
             if dist < threshold:
                 # Zielabgleich: "find the red box" -> "red" und "box"
                 from MiniWorldRegistry import get_entity_color_name, get_entity_type_name
                 ent_type = get_entity_type_name(ent)
                 ent_color = get_entity_color_name(ent) or "unknown"
 
-                if ent_color in current_goal and ent_type in current_goal:                    # Richtiges Objekt → Episode beenden mit Erfolg
+                if ent_color in current_goal and ent_type in current_goal:
+                    # Richtiges Objekt → Episode beenden mit Erfolg (kein Cooldown)
                     terminated = True
                     self._terminal_reward = 1.0
                     print(f"  [Kollision] ZIEL ERREICHT! ({ent_color} {ent_type}, dist={dist:.2f} < {threshold:.2f})")
-                else:
-                    # Falsches Objekt → echte Strafe, Episode läuft weiter
+                elif self._collision_cooldown == 0:
+                    # Falsches Objekt → Strafe + Cooldown starten
                     self._terminal_reward = -0.5
+                    self._collision_cooldown = 15
                     print(f"  [Kollision] Falsches Objekt: {ent_color} {ent_type} (Ziel: {current_goal}, dist={dist:.2f} < {threshold:.2f})")
                 break
 
@@ -548,7 +556,9 @@ class Orchestrator:
         print()
 
         # ── Dashboard (B18) – früh öffnen, damit Fenster sofort bewegbar sind ──
-        hist_len = self.cfg["n_steps"] if self.cfg["n_steps"] > 0 else 5000
+        # Genug History für den gesamten Trainingslauf (bei display_every=8
+        # sind 50000 Einträge = 400k Steps, ~200KB RAM – vernachlässigbar)
+        hist_len = self.cfg["n_steps"] if self.cfg["n_steps"] > 0 else 50000
         self.dashboard = TrainingDashboard(
             max_history=hist_len,
             title=(f"B19 – Live Training  |  "
@@ -835,21 +845,21 @@ class Orchestrator:
                     goal_dist_delta = goal_dist_before - goal_dist_after  # >0 = näher
 
             # ── Falsche-Objekt-Kollision → sofort Recovery-Override ──
+            # MiniWorld hat KEIN Rückwärts – nur links/rechts/vorwärts.
+            # Recovery: Erst wegdrehen (8 Steps), dann vorwärts (4 Steps).
             _t_rew = getattr(self.obs_source, '_terminal_reward', None)
             if (_t_rew is not None and _t_rew < 0
                     and self._gemini_override_steps == 0
                     and isinstance(self.obs_source, MiniWorldObsSource)):
-                # 3-Phasen: Rückwärts → Drehen (zufällige Richtung) → Vorwärts
                 turn_dir = 1.0 if np.random.rand() > 0.5 else -1.0
-                turn_vec = np.array([0.3, turn_dir * 1.1, 0.0, 0.0, 0.0, 0.0],
+                turn_vec = np.array([0.0, turn_dir * 1.2, 0.0, 0.0, 0.0, 0.0],
                                     dtype=np.float32)
-                self._gemini_override_action = HINT_VECTORS["backward"].copy()
-                self._gemini_override_steps = 4
+                self._gemini_override_action = turn_vec.copy()
+                self._gemini_override_steps = 8  # ~180° Drehung
                 self._gemini_override_queue = [
-                    (turn_vec, 5),                          # drehen
-                    (HINT_VECTORS["forward"].copy(), 3),    # wegfahren
+                    (HINT_VECTORS["forward"].copy(), 4),    # wegfahren
                 ]
-                print(f"  [Step {step:4d}] Objekt-Recovery: 4× back, 5× turn, 3× fwd")
+                print(f"  [Step {step:4d}] Objekt-Recovery: 8× turn, 4× fwd")
 
             # ── ML-System Step (B16) ───────────────────
             ml_result = self.ml_system.step(
@@ -858,109 +868,93 @@ class Orchestrator:
                 next_obs_np=next_obs.image,
                 scene=self._scene,
                 terminal_reward=_t_rew,
-                skip_api_call=True,
+                skip_api_call=False,  # B16 ruft Gemini direkt auf → r_gemini korrekt
                 hint_vector=self._hint_vector,
                 agent_move_dist=agent_move_dist,
                 goal_dist_delta=goal_dist_delta,
             )
 
-            # ── High-res für Gemini ─────────────────────
-            # Nutze get_high_res() für alle Quellen (MiniWorld hochskaliert auf 256x256, Mock nativ 256x256).
-            # Das löst das Problem des falschen Seitenverhältnisses und der zu kleinen Darstellung im Dashboard.
+            # ── Gemini-Ergebnis von B16 lesen (B16 ruft jetzt direkt die API auf) ──
             gemini_image = None
-            if ml_result.get("api_call_requested"):
+            if ml_result.get("gem_called") and self.ml_system.last_gemini_result:
+                ass = self.ml_system.last_gemini_result
+                # High-res Bild für Dashboard speichern
                 gemini_image = self.robot.get_high_res().image
-
-                # Wand-Filter: einheitliche graue Fläche nicht an Gemini senden
-                # (Gemini sagt "unscharf", aber es ist eine Wand → nutzloser API-Call)
                 if gemini_image is not None:
-                    _img_var = float(np.var(gemini_image.astype(np.float32)))
-                    if _img_var < 200.0:
-                        gemini_image = None
-                        print(f"  [Step {step:4d}] Gemini übersprungen (Wand, var={_img_var:.0f})")
-
-                if gemini_image is None:
-                    gemini_event = None
-                else:
-                    # Persistiert bis zum nächsten Gemini-Call
                     self._last_gemini_image = gemini_image
 
-                    ass = self.gemini.assess_image(
-                        gemini_image,
-                        self.ml_system.current_goal,
-                        {"linear_x":   float(act_arr[0]),
-                         "angular_z":  float(act_arr[1]),
-                         "camera_pan": float((act_arr[2]+1)/2*180-90),
-                         "camera_tilt":float((act_arr[3]+1)/2*90-45)},
-                    )
-                    print(f"  [Step {step:4d}] Gemini ER: r={ass['reward']:.3f}")
-                    print(f"             Situation:  {ass.get('situation','')}")
-                    print(f"             Recommendation: {ass.get('recommendation','')}")
-                    print(f"             Hint:       {ass.get('next_action_hint','')}")
-                    if "raw_response" in ass:
-                        print(f"             Raw:        {ass['raw_response']}")
-                    gemini_event = ass
-                    self._pending_gemini_event = ass
+                print(f"  [Step {step:4d}] Gemini: r={ass.get('reward',0):.3f} "
+                      f"src={ass.get('source','?')}")
+                print(f"             Situation:  {ass.get('situation','')}")
+                print(f"             Hint:       {ass.get('next_action_hint','')}")
+                if "raw_response" in ass:
+                    print(f"             Raw:        {ass['raw_response']}")
+                gemini_event = ass
+                self._pending_gemini_event = ass
 
-                    # T28 Hybrid: Safety-Hints → harter Override, Richtungs-Hints → Soft-Reward
-                    hint = ass.get("next_action_hint", "").lower()
-                    SAFETY_HINTS = {"avoid_left", "avoid_right", "backward", "free_drive"}
+                # T28 Hybrid: Safety-Hints → harter Override, Richtungs-Hints → Soft-Reward
+                hint = ass.get("next_action_hint", "").lower()
+                SAFETY_HINTS = {"avoid_left", "avoid_right", "backward", "free_drive"}
 
-                    # Safety-Hints: harter Override (Kollisionsvermeidung)
-                    # 3-Phasen-Recovery: Rückwärts → Drehen → Vorwärts
-                    # Verhindert "Festkleben" an Objekten (reines Drehen reicht nicht)
-                    if "avoid_left" in hint:
-                        self._gemini_override_action = HINT_VECTORS["backward"].copy()
-                        self._gemini_override_steps = 3
-                        self._gemini_override_queue = [
-                            (HINT_VECTORS["avoid_left"].copy(), 4),   # drehen
-                            (HINT_VECTORS["forward"].copy(), 2),      # wegfahren
-                        ]
-                        self._hint_vector = None; self._hint_name = ""
-                        print(f"             → Safety-Override: AVOID LEFT (3× back, 4× turn, 2× fwd)")
-                    elif "avoid_right" in hint:
-                        self._gemini_override_action = HINT_VECTORS["backward"].copy()
-                        self._gemini_override_steps = 3
-                        self._gemini_override_queue = [
-                            (HINT_VECTORS["avoid_right"].copy(), 4),  # drehen
-                            (HINT_VECTORS["forward"].copy(), 2),      # wegfahren
-                        ]
-                        self._hint_vector = None; self._hint_name = ""
-                        print(f"             → Safety-Override: AVOID RIGHT (3× back, 4× turn, 2× fwd)")
-                    elif "backward" in hint:
-                        self._gemini_override_action = HINT_VECTORS["backward"].copy()
-                        self._gemini_override_steps = 3
-                        self._hint_vector = None; self._hint_name = ""
-                        print(f"             → Safety-Override: BACKWARD ({self._gemini_override_steps} Steps)")
-                    elif "free_drive" in hint:
-                        turn_dir = 0.9 if np.random.rand() > 0.5 else -0.9
-                        self._gemini_override_action = HINT_VECTORS["free_drive"].copy()
-                        self._gemini_override_steps = 4
-                        self._gemini_override_queue = [
-                            (np.array([0.2, turn_dir, 0.0, 0.0, 0.0, 0.0],
-                                      dtype=np.float32), 4),
-                        ]
-                        self._hint_vector = None; self._hint_name = ""
-                        side = "L" if turn_dir > 0 else "R"
-                        print(f"             → Safety-Override: FREE DRIVE 4× back, 4× turn {side}")
-                    else:
-                        # Richtungs-Hints: Soft-Reward (NN bleibt in Kontrolle)
-                        matched = None
-                        for key in HINT_VECTORS:
-                            if key in SAFETY_HINTS:
+                # Safety-Hints: harter Override (Kollisionsvermeidung)
+                # MiniWorld hat kein Rückwärts → Wegdrehen + Vorwärts
+                if "avoid_left" in hint:
+                    self._gemini_override_action = HINT_VECTORS["avoid_left"].copy()
+                    self._gemini_override_steps = 6
+                    self._gemini_override_queue = [
+                        (HINT_VECTORS["forward"].copy(), 3),
+                    ]
+                    self._hint_vector = None; self._hint_name = ""
+                    print(f"             -> Safety-Override: AVOID LEFT (6x turn, 3x fwd)")
+                elif "avoid_right" in hint:
+                    self._gemini_override_action = HINT_VECTORS["avoid_right"].copy()
+                    self._gemini_override_steps = 6
+                    self._gemini_override_queue = [
+                        (HINT_VECTORS["forward"].copy(), 3),
+                    ]
+                    self._hint_vector = None; self._hint_name = ""
+                    print(f"             -> Safety-Override: AVOID RIGHT (6x turn, 3x fwd)")
+                elif "backward" in hint:
+                    turn_dir = 1.0 if np.random.rand() > 0.5 else -1.0
+                    turn_vec = np.array([0.0, turn_dir * 1.2, 0.0, 0.0, 0.0, 0.0],
+                                        dtype=np.float32)
+                    self._gemini_override_action = turn_vec.copy()
+                    self._gemini_override_steps = 8
+                    self._gemini_override_queue = [
+                        (HINT_VECTORS["forward"].copy(), 3),
+                    ]
+                    self._hint_vector = None; self._hint_name = ""
+                    print(f"             -> Safety-Override: TURN-AWAY (8x turn, 3x fwd)")
+                elif "free_drive" in hint:
+                    turn_dir = 0.9 if np.random.rand() > 0.5 else -0.9
+                    turn_vec = np.array([0.0, turn_dir, 0.0, 0.0, 0.0, 0.0],
+                                        dtype=np.float32)
+                    self._gemini_override_action = turn_vec.copy()
+                    self._gemini_override_steps = 5
+                    self._gemini_override_queue = [
+                        (HINT_VECTORS["forward"].copy(), 4),
+                    ]
+                    self._hint_vector = None; self._hint_name = ""
+                    side = "L" if turn_dir > 0 else "R"
+                    print(f"             -> Safety-Override: FREE DRIVE 5x turn {side}, 4x fwd")
+                else:
+                    # Richtungs-Hints: Soft-Reward (NN bleibt in Kontrolle)
+                    matched = None
+                    for key in HINT_VECTORS:
+                        if key in SAFETY_HINTS:
+                            continue
+                        if key in hint:
+                            if key in ("left", "right") and ("camera" in hint or "avoid" in hint):
                                 continue
-                            if key in hint:
-                                if key in ("left", "right") and ("camera" in hint or "avoid" in hint):
-                                    continue
-                                matched = key
-                                break
-                        if matched:
-                            self._hint_vector = HINT_VECTORS[matched].copy()
-                            self._hint_name = matched
-                            print(f"             → Soft-Hint: {matched.upper()}")
-                        else:
-                            self._hint_vector = None
-                            self._hint_name = ""
+                            matched = key
+                            break
+                    if matched:
+                        self._hint_vector = HINT_VECTORS[matched].copy()
+                        self._hint_name = matched
+                        print(f"             -> Soft-Hint: {matched.upper()}")
+                    else:
+                        self._hint_vector = None
+                        self._hint_name = ""
             else:
                 gemini_event = None
 

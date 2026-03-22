@@ -589,9 +589,16 @@ class AdaptiveController:
         self.interval_hist.append(interval)
         call = force or (since >= interval)
         if call:
+            self._prev_last_call = self.last_call  # für undo
             self.last_call = self.total
             self.calls    += 1
         return call
+
+    def undo_last_call(self):
+        """Timer zurücksetzen wenn der API-Call downstream nicht stattfand."""
+        if hasattr(self, '_prev_last_call'):
+            self.last_call = self._prev_last_call
+            self.calls = max(0, self.calls - 1)
 
     def reset_episode(self):
         """Episode-Grenze: Timer zurücksetzen, damit nicht sofort gefeuert wird."""
@@ -1107,6 +1114,20 @@ class IntegratedSystem:
                 self.actor_optimizer.load_state_dict(checkpoint["actor_optimizer"])
             if "scheduler" in checkpoint:
                 self.scheduler.load_state_dict(checkpoint["scheduler"])
+            ## LR-Warm-Restart: nur wenn LR am Minimum festsitzt (1e-4).
+            ## Einmaliger Reset damit das Netz sich an geänderte Rewards anpassen kann.
+            #current_lr = self.optimizer.param_groups[0]['lr']
+            #if current_lr <= 1.1e-4:
+            #    for pg in self.optimizer.param_groups:
+            #        pg['lr'] = self.cfg["lr"]
+            #    for pg in self.actor_optimizer.param_groups:
+            #        pg['lr'] = self.cfg["lr"]
+            #    self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            #        self.optimizer, mode='min', factor=0.5, patience=80, min_lr=1e-4
+            #    )
+            #    print(f"  [Checkpoint] LR-Warm-Restart: {current_lr:.1e} -> {self.cfg['lr']}")
+            #else:
+            #    print(f"  [Checkpoint] LR beibehalten: {current_lr:.1e}")
 
         # Training-State
         if "total_steps" in checkpoint:
@@ -1158,13 +1179,17 @@ class IntegratedSystem:
         mu = pred_action.squeeze(0).numpy()
         sigma = pred_sigma.squeeze(0).numpy()
 
-        # T26: Stochastisches Sampling – N(μ, σ²) mit Exploration-Decay
-        explore_scale = max(0.1, 1.0 - self.total_steps / 50000)
-        # Exploration-Burst: wenn Agent feststeckt, Exploration hochsetzen
-        STUCK_EXPLORE_THRESHOLD = 20  # Steps ohne Bewegung
+        # T26: Stochastisches Sampling mit Noise-Floor
+        # sigma kann sehr klein werden (0.02) → Noise-Floor garantiert Mindest-Exploration
+        explore_scale = max(0.15, 1.0 - self.total_steps / 80000)
+        NOISE_FLOOR = 0.08  # Mindest-Standardabweichung für Exploration
+        effective_sigma = np.maximum(sigma, NOISE_FLOOR)
+        # Exploration-Burst: wenn Agent feststeckt, stärker explorieren
+        STUCK_EXPLORE_THRESHOLD = 15
         if self._stuck_count >= STUCK_EXPLORE_THRESHOLD:
-            explore_scale = 0.8
-        noise = np.random.randn(ACTION_DIM).astype(np.float32) * sigma * explore_scale
+            explore_scale = 1.0
+            effective_sigma = np.maximum(sigma, 0.25)
+        noise = np.random.randn(ACTION_DIM).astype(np.float32) * effective_sigma * explore_scale
         sampled_action = np.clip(mu + noise, -1.0, 1.0)
 
         return {
@@ -1245,7 +1270,7 @@ class IntegratedSystem:
             r_gemini   = float(terminal_reward)
             goal_prog  = 1.0 if terminal_reward > 0.5 else 0.0
             gem_label  = "success" if terminal_reward > 0.5 else "obstacle"
-            
+
             assessment = {
                 "reward": r_gemini,
                 "goal_progress": goal_prog,
@@ -1255,10 +1280,9 @@ class IntegratedSystem:
                 "training_label": gem_label,
             }
             self.last_gemini_result = assessment
-            self.adaptive.calls += 1 # Wir zählen dies als wertvolles Feedback
-            self.adaptive.last_call = self.adaptive.total # WICHTIG: Interval-Timer zurücksetzen!
-            self.adaptive.interval_hist.append(self.adaptive.min_interval)
-        elif self.adaptive.should_call(fe=r_intr, novelty=novelty):
+            # Timer NICHT zurücksetzen – sonst verhindert häufige Kollision
+            # echte Gemini-API-Calls (Todesspirale: collision → reset → nie should_call)
+        if self.adaptive.should_call(fe=r_intr, novelty=novelty):
             gem_called = True
             api_call_requested = True
             if not skip_api_call:
@@ -1288,9 +1312,11 @@ class IntegratedSystem:
         # T12: vorherige Aktion für nächsten GRU-Schritt merken
         self.prev_action = action_np.copy()
 
-        # ── T25: Stuck-Erkennung (basiert auf physischer Position) ────
-        # agent_move_dist = 0.0 heißt: nur Kamera bewegt, Körper steht still
-        MOVE_THRESHOLD = 0.005  # Mindestbewegung pro Step (MiniWorld-Einheiten)
+        # ── T25: Stuck-Erkennung (Position + Spinning) ────────────
+        # Spinning (Drehen auf der Stelle) erzeugt winzige move_dist
+        # durch MiniWorld-Physik → alter Threshold wurde immer zurückgesetzt.
+        # Neuer Ansatz: move_dist < 0.02 = "nicht wirklich bewegt" (auch Spinning).
+        MOVE_THRESHOLD = 0.02
         if agent_move_dist < MOVE_THRESHOLD:
             self._stuck_count += 1
         else:
@@ -1303,21 +1329,23 @@ class IntegratedSystem:
             F.normalize(z, dim=-1), goal_p, dim=-1
         ).item())
         r_goal_norm = (r_goal_cos + 1.0) / 2.0   # [-1,1] → [0,1]
-        r_sigma     = float(1.0 - pred_sigma.mean().item())
 
-        # Aktions-Effizienz: Ganzkörper-Drehung ist teuer (Hexapod).
-        # Nur Bestrafung, kein Pan-Bonus (sonst lernt Agent dauerhaft geschwenkten Pan).
+        # Sigma: nur als Penalty bei hoher Unsicherheit, nicht als Belohnung
+        # für vorhersagbare Szenen (sonst: Wände/Ecken = "gut")
+        sigma_val = float(pred_sigma.mean().item())
+        r_sigma = -0.1 * max(0.0, sigma_val - 0.3)  # Penalty nur ab sigma>0.3
+
+        # Aktions-Effizienz: nur Penalty für starkes Drehen, kein Baseline-Bonus
         angular_cost = abs(float(action_np[1]))          # |angular_z| ∈ [0,1]
-        r_efficiency = float(1.0 - 0.5 * angular_cost)
+        r_efficiency = -0.05 * angular_cost  # max -0.05 statt +0.1 Baseline
 
         # T25: Stuck-Penalty – Agent bewegt sich physisch nicht
         r_stuck_penalty = -0.3 if is_stuck else 0.0
 
         # ── Wand-Proximity-Penalty: niedrige Bildvarianz = Wand füllt Frame ──
         img_variance = float(np.var(obs_np.astype(np.float32)))
-        # Varianz < 200 = fast einheitliches Bild (Wand), < 500 = teilweise Wand
-        # Penalty skaliert linear: var=0 → -0.2, var=500 → 0.0
-        r_wall_penalty = -0.2 * max(0.0, 1.0 - img_variance / 500.0) if img_variance < 500.0 else 0.0
+        # Stärker: var=0 → -0.4, var=800 → 0.0 (vorher: -0.2 bei var<500)
+        r_wall_penalty = -0.4 * max(0.0, 1.0 - img_variance / 800.0) if img_variance < 800.0 else 0.0
 
         # ── Bewegungs-Bonus: physische Fortbewegung statt Pixel-Differenz ──
         # agent_move_dist ~0.0 = stillstehend, ~0.05+ = gute Bewegung
@@ -1348,10 +1376,10 @@ class IntegratedSystem:
                 cos_sim = float(np.dot(action_np, hint_vector) / (act_norm * hint_norm))
                 r_hint = 0.1 * cos_sim  # ∈ [-0.1, 0.1]
 
-        r_total = (0.25 * r_intr_norm + 0.35 * r_gemini +
-                   0.2  * r_goal_norm +
-                   0.1  * r_sigma +
-                   0.1  * r_efficiency +
+        r_total = (0.3  * r_intr_norm + 0.35 * r_gemini +
+                   0.15 * r_goal_norm +
+                   r_sigma +
+                   r_efficiency +
                    r_hint +
                    r_linear +
                    r_approach +
